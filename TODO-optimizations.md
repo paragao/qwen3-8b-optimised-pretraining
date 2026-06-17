@@ -50,11 +50,24 @@
 | Megatron-Core + real data | ~140K tok/s | ~83 days | Next step |
 | MFU achieved | — | — | **~0.44** |
 
+### 5. ✅ B300 Optimization Sweep (June 17, 2026)
+- [x] Tested MBS=2/4/8 with seq=4096/8192, with/without grad checkpointing
+- [x] Best config: MBS=4, seq=4096, no grad ckpt → **976 TFLOP/s/GPU, 318K tok/s**
+- [x] ~36 days to 1T tokens on 16× B300
+
+### 6. ✅ TP=2 Experiment — Result: WORSE
+- [x] Tested TP=2, DP=8 vs TP=1, DP=16
+- [x] TP=2: 868 TFLOP/s/GPU (vs 976 for TP=1) — **11% slower**
+- [x] Root cause: unnecessary TP all-reduce overhead when model fits on one GPU
+- [x] Conclusion: pure DP is optimal for 8B model on B300
+
 ### Next Steps
 1. ✅ ~~Pre-tokenize C4~~ — Done (153 shards, 5B tokens)
 2. ✅ ~~HF Accelerate optimization~~ — Done (50.1K single-node, 105K 2-node)
-3. ✅ ~~Megatron-Core migration~~ — **Done (70.3K single-node, ~140K 2-node projected)**
-4. **Connect real pre-tokenized C4 to Megatron-Core script** — Need Megatron .bin/.idx format
-5. **2-node Megatron-Core production run** — Scale to 16 GPUs
+3. ✅ ~~Megatron-Core migration~~ — Done (70.3K single-node, 138.4K 2-node)
+4. ✅ ~~B300 optimization sweep~~ — Done (976 TFLOP/s, 318K tok/s)
+5. ✅ ~~TP=2 experiment~~ — Done (worse: 868 TFLOP/s, pure DP wins)
 6. Scale tokenization to full 1T tokens (currently 5B)
-7. Consider MBS=4 (25 GB headroom available)
+7. Add auto-requeue for QOS time limit
+8. Consider FP8 training for additional throughput
+9. Test longer context (8192+) at scale if use case requires

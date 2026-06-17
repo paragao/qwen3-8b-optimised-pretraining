@@ -259,6 +259,62 @@ The Megatron-Core throughput (70.3K tok/s on 8 GPUs = ~140K on 16 GPUs) implies 
 
 ---
 
+## 9. B300 Final Results (Validated June 17, 2026)
+
+### 9.1 Optimization Sweep
+
+The B300's 268 GB memory eliminates the need for gradient checkpointing, enabling significantly higher throughput. Full sweep results:
+
+| MBS | Seq Len | Grad Ckpt | TFLOP/s/GPU | tok/s (16 GPU) | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 2 | 4096 | Yes | 612 | 199K | Baseline (H200 config) |
+| 2 | 4096 | No | 784 | 255K | +28% from removing recompute |
+| 4 | 4096 | Yes | 768 | 250K | Better GPU utilization |
+| **4** | **4096** | **No** | **976** | **318K** | **Best config** ✅ |
+| 8 | 4096 | No | 941 | 306K | Diminishing returns |
+| 4 | 8192 | No | 892 | 145K | Higher seq = fewer tokens/s |
+| 8 | 8192 | No | 914 | 149K | Marginal gain at long seq |
+
+### 9.2 Best Configuration
+
+| Parameter | Value |
+| --- | --- |
+| Tensor Parallelism (TP) | 1 |
+| Pipeline Parallelism (PP) | 1 |
+| Data Parallelism (DP) | 16 |
+| Micro-Batch Size | 4 |
+| Sequence Length | 4096 |
+| Gradient Checkpointing | **No** (model fits without it) |
+| TFLOP/s per GPU | **976** |
+| Throughput (16 GPU) | **318K tok/s** |
+| Time to 1T tokens | **~36 days** |
+
+### 9.3 TP=2 Experiment
+
+Tested TP=2 to check whether tensor parallelism helps on B300's 1800 GB/s NVLink:
+
+| Config | TFLOP/s/GPU | tok/s (16 GPU) | vs Best |
+| --- | --- | --- | --- |
+| TP=1, DP=16, MBS=4 | **976** | **318K** | — |
+| TP=2, DP=8, MBS=4 | 868 | 283K | **-11%** |
+
+**Conclusion**: TP=2 is **worse** because the communication overhead of splitting tensor operations across 2 GPUs outweighs any potential benefit. When the model fits entirely on one GPU, pure DP is optimal — TP only adds unnecessary all-reduce synchronization within each TP group.
+
+### 9.4 B300 vs H200 Final Comparison
+
+| Metric | H200 (Validated) | B300 (Validated) | Speedup |
+| --- | --- | --- | --- |
+| Best throughput (16 GPU) | 138.4K tok/s | 318K tok/s | **2.30×** |
+| TFLOP/s per GPU | 497 | 976 | **1.96×** |
+| Time to 1T tokens | ~84 days | ~36 days | **2.33×** |
+| Gradient checkpointing needed | Yes | No | — |
+| Best MBS | 2 | 4 | — |
+| Effective MFU | 0.44 | 0.29 | — |
+
+> The 1.96× TFLOP/s improvement (not the theoretical 3.4×) indicates B300 is **communication-bound** at this model size. The 8.2B model's compute-to-communication ratio doesn't fully exploit B300's 3.4× higher peak FLOPS. Larger models or longer sequences would better utilize the hardware.
+
+---
+
 ## 7. Lessons Learned (Smoke Test)
 
 | Issue | Root Cause | Fix |

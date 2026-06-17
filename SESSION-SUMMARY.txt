@@ -1,0 +1,187 @@
+# Qwen3-8B Pre-Training Project — Session Summary
+# Last updated: June 17, 2026
+# Repo: https://github.com/paragao/qwen3-8b-optimised-pretraining.git
+# Cluster: p5en.smml.aiml.aws.dev (SSH)
+
+## PROJECT GOAL
+Pre-train Qwen3-8B (8.2B dense params) on 1 trillion tokens (C4 dataset) using:
+- Cluster A: 2× p5en.48xlarge (16× H200 GPUs, 141 GB/GPU)
+- Cluster B: 2× p6-b300.48xlarge (16× B300 GPUs, 268 GB/GPU) — NOT YET TESTED
+- Orchestration: Slurm + PyXis/Enroot
+- Filesystem: FSx for Lustre at /fsx/paragao/qwen3-8b/
+
+## CURRENT STATE (Where we stopped)
+- ✅ 2-node Megatron-Core training VALIDATED on p5en (H200): 138.4K tok/s, MFU ≈ 0.44
+- ✅ B300 optimization sweep COMPLETE: 976 TFLOP/s/GPU, 318K tok/s (16 GPU)
+- ✅ TP=2 experiment COMPLETE: worse than pure DP (868 vs 976 TFLOP/s)
+- ✅ All code and results pushed to GitHub
+- ⬜ Full 1T token dataset not yet prepared (current: 5B tokens)
+- ⬜ QOS time limit means job restarts needed (auto-requeue not implemented)
+
+## OPTIMIZATION JOURNEY (Validated Results)
+
+| # | Config | Throughput (tok/s) | MFU | Time to 1T |
+|---|--------|-------------------|-----|-----------|
+| 1 | HF Accelerate, streaming, ZeRO-2, MBS=2 | 17.5K (8 GPU) | 0.11 | ~660 days |
+| 2 | + SDPA + ZeRO-1 + MBS=4 | 37K (8 GPU) | 0.23 | ~312 days |
+| 3 | + Pre-tokenized mmap data | 50.1K (8 GPU) | 0.31 | ~231 days |
+| 4 | 2-node HF stack (mmap) | 105K (16 GPU) | 0.33 | ~110 days |
+| 5 | Megatron-Core + TE (single-node, mock) | 70.3K (8 GPU) | 0.44 | ~165 days |
+| 6 | Megatron-Core + TE + EFA (2-node, H200) | 138.4K (16 GPU) | 0.44 | ~84 days |
+| 7 | **B300: best config (TP=1, MBS=4, no grad ckpt)** | **318K (16 GPU)** | **0.29** | **~36 days** |
+
+## B300 OPTIMIZATION SWEEP (June 17, 2026)
+
+B300's 268 GB memory removes the need for gradient checkpointing, unlocking higher throughput:
+
+| MBS | Seq Len | Grad Ckpt | TFLOP/s/GPU | tok/s (16 GPU) |
+|-----|---------|-----------|-------------|----------------|
+| 2 | 4096 | Yes | 612 | 199K |
+| 2 | 4096 | No | 784 | 255K |
+| 4 | 4096 | Yes | 768 | 250K |
+| **4** | **4096** | **No** | **976** | **318K** ✅ |
+| 8 | 4096 | No | 941 | 306K |
+| 4 | 8192 | No | 892 | 145K |
+| 8 | 8192 | No | 914 | 149K |
+
+### TP=2 Experiment Result
+- TP=2, DP=8, MBS=4: 868 TFLOP/s/GPU, 283K tok/s — **11% worse than TP=1**
+- Cause: unnecessary all-reduce communication overhead for a model that fits on one GPU
+- Verdict: pure DP is optimal when model fits in single-GPU memory
+
+### B300 vs H200 Final Verdict
+- B300 delivers **1.96× the TFLOP/s** and **2.30× throughput** vs H200
+- Not 3.4× (theoretical peak ratio) because 8B model is **communication-bound** at this scale
+- B300 removes gradient checkpointing requirement → larger MBS → better utilization
+- Larger models (70B+) would better exploit B300's 3.4× peak FLOPS advantage
+
+## KEY ARCHITECTURE DECISIONS
+
+### Model Config
+- Qwen3-8B: 36 layers, d=4096, 32 Q-heads, 8 KV-heads, FFN=14336 (SwiGLU), vocab=151936
+- Precision: BF16
+- Seq length: 4096
+- Training from scratch (random init, not fine-tuning)
+
+### Parallelism (Final Production Config)
+- TP=1, PP=1, DP=16 (pure data parallelism — model fits on one GPU)
+- Distributed optimizer (shards Adam states across 16 GPUs)
+- Overlapped grad reduce + param gather
+- Selective activation recompute (gradient checkpointing)
+- MBS=2, GBS=128, grad_accum=4
+
+### Why These Choices
+- TP=1: 8.2B fits on one GPU with distributed optimizer + grad ckpt. TP adds comm overhead.
+- Distributed optimizer: Without it, Adam states (48 GB fp32) + model (16 GB) + grads (32 GB) = 96+ GB, leaving no room for activations on 141 GB H200.
+- Gradient checkpointing: Mandatory. Without it, activations OOM even at MBS=1.
+- MBS=2 (not 4): MBS=4 OOMs with Megatron-Core (different memory profile than HF).
+
+## CLUSTER DETAILS
+
+### p5en.smml.aiml.aws.dev
+- Partition: p5en (default), dynamic nodes (cloud-backed, spin up on demand)
+- 16 nodes total (p5en-dy-gpu-[1-16])
+- Slurm path: /opt/slurm/bin/ (NOT in default PATH — always use full paths)
+- PyXis v3.4.1, Enroot v3.4.1
+- Docker available at /usr/bin/docker
+- QOS: admin_qos (24h max wall time) — user paragao
+- IAM user: shared-cluster (no ECR access)
+
+### Container (Final)
+- Path: /fsx/paragao/qwen3-8b/containers/qwen3-8b-megatron-bridge.sqsh (31 GB)
+- Base: nvcr.io/nvidia/nemo:25.07
+- PyTorch 2.8.0, CUDA 12.9
+- Megatron-Core 0.13.1, Megatron-Bridge 0.2.0rc0, Transformer Engine 2.5
+- EFA installer 1.48.0, NCCL v2.30.4-1, GDRCopy v2.5.2
+- Built with: sudo docker build → sudo enroot import (NEVER mksquashfs workarounds)
+
+### Container Build Command (for rebuilding)
+```bash
+cd /fsx/paragao/qwen3-8b/containers/
+sudo docker build -t qwen3-8b-megatron-bridge:latest -f Dockerfile.megatron-bridge .
+rm -f qwen3-8b-megatron-bridge.sqsh
+mkdir -p /fsx/paragao/qwen3-8b/tmp
+sudo TMPDIR=/fsx/paragao/qwen3-8b/tmp ENROOT_TEMP_PATH=/fsx/paragao/qwen3-8b/tmp \
+  enroot import --output /fsx/paragao/qwen3-8b/containers/qwen3-8b-megatron-bridge.sqsh \
+  dockerd://qwen3-8b-megatron-bridge:latest
+sudo chown paragao:paragao /fsx/paragao/qwen3-8b/containers/qwen3-8b-megatron-bridge.sqsh
+```
+
+## CRITICAL LESSONS LEARNED (Don't Repeat These Mistakes)
+
+### EFA Silent Fallback to TCP
+NCCL silently falls back to TCP sockets without these:
+1. LD_LIBRARY_PATH must include /opt/amazon/aws-ofi-nccl/lib/
+2. NCCL_TUNER_PLUGIN=/opt/amazon/aws-ofi-nccl/lib/libnccl-tuner-aws-ofi.so
+3. FI_PROVIDER=efa
+4. Symlinks (in this EFA version they already exist at /opt/amazon/aws-ofi-nccl/lib/):
+   - libnccl-net-aws-ofi.so → libnccl-net-ofi.so
+   - libnccl-tuner-aws-ofi.so → libnccl-tuner-ofi.so
+Reference: https://gitlab.aws.dev/smml/benchmarking/dgxc-benchmarks-efa/-/blob/main/container/sglang-efa-b200.Dockerfile
+
+### Slurm/PyXis Gotchas
+- Slurm binaries NOT in PATH on compute nodes: always use /opt/slurm/bin/srun, /opt/slurm/bin/scontrol
+- Shell vars don't pass into PyXis containers: use --container-env=VAR1,VAR2
+- Resolve HEAD_NODE BEFORE srun (scontrol not available inside container):
+  export MASTER_ADDR=$(/opt/slurm/bin/scontrol show hostname $SLURM_NODELIST | head -n1)
+- For multi-node torchrun: ntasks-per-node=1 (torchrun handles GPU workers)
+- For single-node: remove FI_PROVIDER=efa (causes NCCL failure for intra-node)
+
+### enroot import Requires Three Fixes
+1. sudo (Docker socket is root:docker, user not in docker group)
+2. TMPDIR on /fsx (55 GB NeMo container won't fit in /tmp with 38 GB free)
+3. docker buildx use default (image must be in main containerd store)
+
+### Megatron-Core API (v0.13.1 in NeMo 25.07)
+- torch.compile INCOMPATIBLE: Set TORCH_COMPILE_DISABLE=1
+- Use get_gpt_layer_with_transformer_engine_spec() (NOT local spec)
+- BlendedMegatronDatasetBuilder deadlocks with DP — use custom Dataset class
+- Tokenizer: use build_tokenizer(get_args())
+- Distributed optimizer (--use-distributed-optimizer) is REQUIRED for 8B on H200
+- CUDA_DEVICE_MAX_CONNECTIONS=1 only needed for TP (remove for DP-only)
+- Qwen3 bridge NOT registered — use GPT model provider with Qwen3 dimensions
+
+### torch.compile — NEVER USE
+- Does NOT work with DeepSpeed
+- Does NOT work with HF Qwen3 model (multi-node crash)
+- Does NOT work in this NeMo container (ldconfig error)
+- ALWAYS set TORCH_COMPILE_DISABLE=1
+
+## FILE LAYOUT ON CLUSTER
+
+```
+/fsx/paragao/qwen3-8b/
+├── containers/
+│   ├── qwen3-8b-megatron-bridge.sqsh  (31 GB — PRODUCTION)
+│   ├── qwen3-8b-training.sqsh         (14 GB — LEGACY HF stack)
+│   └── Dockerfile.megatron-bridge
+├── code/
+│   ├── train_megatron.py               (PRODUCTION)
+│   ├── submit_megatron_2node.sh        (PRODUCTION)
+│   ├── submit_megatron.sh              (single-node test)
+│   ├── train_qwen3_8b.py              (LEGACY HF)
+│   └── pretokenize_c4.py              (data pipeline)
+├── datasets/c4/                        (153 shards, ~5B tokens)
+├── checkpoints-megatron/               (Megatron checkpoints)
+└── logs/
+```
+
+## TO RESUME (Remaining Work)
+
+1. Scale tokenization to full 1T tokens (currently 5B, need 200× more)
+2. Add auto-requeue/checkpoint-resume for QOS time limit
+3. Consider FP8 training (potential additional throughput on both clusters)
+4. Test longer context (8192+) at scale if downstream use case requires
+5. Profile communication overhead to understand 1.96× vs 3.4× gap
+6. Convert data to native Megatron .bin/.idx format for optimal I/O
+
+## PRODUCTION SUBMIT
+```bash
+ssh p5en.smml.aiml.aws.dev
+/opt/slurm/bin/sbatch /fsx/paragao/qwen3-8b/code/submit_megatron_2node.sh
+/opt/slurm/bin/squeue -u paragao
+tail -f /fsx/paragao/qwen3-8b/logs/megatron-2node-<JOBID>.out
+```
+
+## HF TOKEN
+HF_TOKEN=REDACTED
