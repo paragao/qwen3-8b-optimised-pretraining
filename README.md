@@ -21,6 +21,18 @@ Both clusters run pure data parallelism (DP=16) with distributed optimizer and o
 
 ---
 
+## Prerequisites
+
+- **Slurm** workload manager
+- **PyXis + Enroot** container runtime (for running GPU containers via Slurm)
+- **EFA networking** with GDRDMA support (for multi-node communication)
+- **FSx for Lustre** shared filesystem mounted at `/fsx/`
+- **Docker** (for building container images)
+
+> **Don't have a cluster?** Deploy a fully functional HPC cluster in under 1 hour using [Amazon SageMaker HyperPod](https://awslabs.github.io/ai-on-sagemaker-hyperpod/). The guide walks you through deploying a ready-to-use cluster with Slurm, EFA, PyXis/Enroot, and FSx for Lustre pre-configured.
+
+---
+
 ## Quick Start
 
 ### H200 Cluster (p5en)

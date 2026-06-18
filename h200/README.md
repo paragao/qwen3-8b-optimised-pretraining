@@ -13,6 +13,18 @@
 
 ---
 
+## Prerequisites
+
+- **Slurm** workload manager (binaries at `/opt/slurm/bin/` on p5en clusters)
+- **PyXis** (v3.4.1+) and **Enroot** (v3.4.1+) container runtime
+- **EFA networking** with GDRDMA on p5en.48xlarge instances
+- **FSx for Lustre** shared filesystem mounted at `/fsx/`
+- **Docker** (for building container images)
+
+> **Don't have a cluster?** Deploy a fully functional HPC cluster in under 1 hour using [Amazon SageMaker HyperPod](https://awslabs.github.io/ai-on-sagemaker-hyperpod/). The guide walks you through deploying a ready-to-use cluster with Slurm, EFA, PyXis/Enroot, and FSx for Lustre pre-configured.
+
+---
+
 ## Best Configuration
 
 | Parameter | Value |
