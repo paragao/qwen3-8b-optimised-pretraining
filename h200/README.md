@@ -68,6 +68,9 @@
 
 ### 1. Build the Container
 
+> **Disk space:** The container build requires ~50 GB of disk space in TMPDIR.
+> `enroot import` needs `sudo` and TMPDIR pointing to FSx (not `/tmp`, which is too small).
+
 ```bash
 cd /fsx/ubuntu/qwen3-8b/containers/
 # Copy h200/Dockerfile to the build context

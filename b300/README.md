@@ -85,6 +85,9 @@ TP=2, DP=8, MBS=4: 868 TFLOP/s/GPU, 283K tok/s — **11% worse than TP=1**. Unne
 
 ### 1. Build the Container
 
+> **Disk space:** The container build requires ~50 GB of disk space in TMPDIR.
+> `enroot import` needs `sudo` and TMPDIR pointing to FSx (not `/tmp`, which is too small).
+
 ```bash
 cd /fsx/ubuntu/qwen3-8b/containers/
 sudo docker build -t qwen3-8b-b300:latest -f Dockerfile .
