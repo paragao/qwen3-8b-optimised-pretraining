@@ -300,9 +300,9 @@ dataloader = DataLoader(
 | I/O mechanism | HTTP download per document | OS page fault → Lustre DMA |
 | CPU work per step | Tokenizer + pad + collate | numpy slice + dtype cast |
 | Token utilization | ~70% (padding waste) | **100%** (packed sequences) |
-| Shuffling | ❌ (streaming can't shuffle) | ✅ (DistributedSampler) |
-| Multi-epoch | ❌ (re-download everything) | ✅ (instant re-access) |
-| Resume training | ❌ (restart from beginning) | ✅ (sampler tracks position) |
+| Shuffling | No (streaming can't shuffle) | Yes (DistributedSampler) |
+| Multi-epoch | No (re-download everything) | Yes (instant re-access) |
+| Resume training | No (restart from beginning) | Yes (sampler tracks position) |
 | Workers parallelism | Blocked on single network stream | 8 workers → 8 OSTs simultaneously |
 
 ### Memory Access Pattern
@@ -327,36 +327,12 @@ The OS kernel's readahead prefetcher detects sequential access patterns within e
 
 | Metric | Streaming (Original) | mmap Shards (Optimized) | Improvement |
 | --- | --- | --- | --- |
-| Throughput (8 GPU) | 37K tok/s | **50.1K tok/s** ✅ | +35% |
-| Throughput (16 GPU) | 72K tok/s | **105K tok/s** ✅ | **+46%** |
+| Throughput (8 GPU) | 37K tok/s | **50.1K tok/s** | +35% |
+| Throughput (16 GPU) | 72K tok/s | **105K tok/s** | **+46%** |
 | GPU idle time (data stalls) | 30-40% | <5% | — |
 | Token waste (padding) | ~30% | 0% | — |
 | Effective MFU | ~0.21 | **~0.33** | +57% |
 | Time to 1T tokens (16 GPU) | ~160 days | **~110 days** | **-50 days** |
-
----
-
-## Integration: Auto-Detect in Training Script
-
-The training script automatically selects the best data loading approach:
-
-```python
-DATA_DIR = "/fsx/paragao/qwen3-8b/datasets/c4"
-
-if os.path.exists(DATA_DIR) and glob.glob(f"{DATA_DIR}/c4_w*_s*.bin"):
-    # Pre-tokenized data available → use fast mmap loader
-    print("Using pre-tokenized mmap shards")
-    dataset = MmapShardDataset(DATA_DIR, seq_length=args.seq_length)
-    sampler = DistributedSampler(dataset, shuffle=True)
-    dataloader = DataLoader(dataset, batch_size=args.micro_batch_size,
-                           sampler=sampler, num_workers=8, pin_memory=True, drop_last=True)
-else:
-    # Fallback to streaming (slower, but works without preprocessing)
-    print("WARNING: Using streaming dataloader (slow). Pre-tokenize for +40% throughput.")
-    hf_dataset = load_dataset(args.dataset, args.dataset_subset, split="train", streaming=True)
-    dataloader = DataLoader(StreamDS(hf_dataset), batch_size=args.micro_batch_size,
-                           collate_fn=collate_fn, num_workers=4, pin_memory=True)
-```
 
 ---
 
@@ -365,9 +341,9 @@ else:
 | | Streaming | Pre-tokenized mmap |
 | --- | --- | --- |
 | **Setup effort** | None (just run) | One-time preprocessing (20-30 min for 10B tokens) |
-| **Throughput** | Limited by network + CPU | Limited by GPU compute (✅ desired) |
+| **Throughput** | Limited by network + CPU | Limited by GPU compute (desired) |
 | **Scalability** | Degrades with more GPUs (shared network) | Scales linearly (parallel OST reads) |
-| **Production readiness** | ❌ Debugging/prototyping only | ✅ Standard for large-scale training |
+| **Production readiness** | Debugging/prototyping only | Standard for large-scale training |
 | **Used by** | Quick experiments | Megatron-LM, NeMo, GPT-NeoX, OLMo, Llama |
 
 **Bottom line**: Streaming is fine for initial debugging. For any serious training run, pre-tokenize your data. The one-time cost (~30 minutes on 96 cores for 10B tokens) pays for itself within the first hour of training.
