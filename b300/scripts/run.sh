@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
 #SBATCH --job-name=qwen3-8b-b300
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=8
@@ -12,26 +14,16 @@
 #SBATCH --container-image=/fsx/ubuntu/qwen3-8b/containers/nemo-efa-26.02.sqsh
 #SBATCH --container-mounts=/fsx:/fsx
 
-# Resolve head node
-export MASTER_ADDR=$(scontrol show hostname $SLURM_NODELIST | head -n1)
-export MASTER_PORT=29500
-
-# EFA / NCCL environment
 export FI_PROVIDER=efa
 export NCCL_SOCKET_IFNAME=^docker,lo,veth
 export NCCL_DEBUG=WARN
 export NCCL_TUNER_PLUGIN=/opt/amazon/ofi-nccl/lib/libnccl-tuner-aws-ofi.so
-export LD_LIBRARY_PATH=/opt/amazon/ofi-nccl/lib:/opt/nccl/build/lib:$LD_LIBRARY_PATH
-
-# Disable torch.compile
+export LD_LIBRARY_PATH=/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:${LD_LIBRARY_PATH}
 export TORCH_COMPILE_DISABLE=1
 
-# Launch training
-srun --container-env=MASTER_ADDR,MASTER_PORT,FI_PROVIDER,NCCL_SOCKET_IFNAME,NCCL_DEBUG,NCCL_TUNER_PLUGIN,LD_LIBRARY_PATH,TORCH_COMPILE_DISABLE \
-    torchrun \
-    --nnodes=${SLURM_NNODES} \
-    --nproc-per-node=8 \
-    --rdzv-id=${SLURM_JOB_ID} \
-    --rdzv-backend=c10d \
-    --rdzv-endpoint=${MASTER_ADDR}:${MASTER_PORT} \
-    /fsx/ubuntu/qwen3-8b/code/train_bridge.py
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p /fsx/ubuntu/qwen3-8b/code
+cp "${SCRIPT_DIR}/train.py" /fsx/ubuntu/qwen3-8b/code/train.py
+
+srun --container-env=FI_PROVIDER,NCCL_SOCKET_IFNAME,NCCL_DEBUG,NCCL_TUNER_PLUGIN,LD_LIBRARY_PATH,TORCH_COMPILE_DISABLE \
+    python /fsx/ubuntu/qwen3-8b/code/train.py

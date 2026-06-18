@@ -8,7 +8,7 @@
 | Nodes | 2 |
 | GPUs | 16× NVIDIA H200 (141 GB HBM3) |
 | Interconnect | EFA GDRDMA (3200 Gbps) |
-| Framework | NeMo 25.07, Megatron-Core v0.13.1, Transformer Engine 2.5 |
+| Framework | Megatron-Bridge (NeMo 25.07) |
 | Container | `nemo-efa-25.07.sqsh` (31 GB) |
 
 ---
@@ -36,7 +36,7 @@
 | Global batch size | 128 (grad_accum=4) |
 | Sequence length | 4096 |
 | Precision | BF16 |
-| Gradient checkpointing | Full recompute (mandatory — 141 GB limit) |
+| Gradient checkpointing | None |
 | Distributed optimizer | Yes (shards Adam across DP ranks) |
 | Overlap grad reduce | Yes |
 | Overlap param gather | Yes |
@@ -51,7 +51,7 @@
 | Throughput | 162K tok/s |
 | Time to 1T tokens | ~71 days |
 | Step time | 3.23s |
-| Peak memory/GPU | ~138 GB / 141 GB |
+| Peak memory/GPU | ~114 GB / 141 GB |
 | MFU | 0.50 |
 
 ---

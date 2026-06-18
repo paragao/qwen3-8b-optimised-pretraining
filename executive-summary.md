@@ -16,10 +16,10 @@ Pre-training **Qwen3-8B** (8.2B dense parameters, 36 layers, GQA 32/8) on 1T tok
 | Global batch size | 128 (grad_accum=4) | 128 (grad_accum=2) |
 | Sequence length | 4096 | 4096 |
 | Precision | BF16 | BF16 |
-| Gradient checkpointing | Full recompute | None |
+| Gradient checkpointing | None | None |
 | Distributed optimizer | Yes (sharded Adam) | Yes (sharded Adam) |
 | Overlap grad reduce | Yes | Yes |
-| Framework | Megatron-Core (NeMo 25.07) | Megatron-Bridge (NeMo 26.02) |
+| Framework | Megatron-Bridge (NeMo 25.07) | Megatron-Bridge (NeMo 26.02) |
 | Container | nemo-efa-25.07.sqsh | nemo-efa-26.02.sqsh |
 
 ---
@@ -32,7 +32,7 @@ Pre-training **Qwen3-8B** (8.2B dense parameters, 36 layers, GQA 32/8) on 1T tok
 | **Throughput** | 162K tok/s | **318K tok/s** | 1.96× |
 | **Time to 1T tokens** | ~71 days | **~36 days** | 1.97× |
 | Step time (100 iters) | 3.23s | 1.65s | 1.96× |
-| Peak memory/GPU | ~138 GB / 141 GB | ~173 GB / 288 GB | — |
+| Peak memory/GPU | ~114 GB / 141 GB | ~173 GB / 288 GB | — |
 | MFU | 0.50 | 0.50 | — |
 
 ---
@@ -45,4 +45,4 @@ Pre-training **Qwen3-8B** (8.2B dense parameters, 36 layers, GQA 32/8) on 1T tok
 
 3. **Pure data parallelism is optimal** when the model fits in single-GPU memory. Distributed optimizer + overlapped grad reduce eliminate the memory penalty while enabling larger effective batch sizes.
 
-4. **Gradient checkpointing** is the key differentiator: required on H200 (141 GB) for MBS≥2, unnecessary on B300 (288 GB) for MBS≤4 — saving ~20% recompute overhead and enabling higher per-step throughput.
+4. **No gradient checkpointing on either cluster.** H200 fits MBS=2 without recompute (~114 GB with distributed optimizer); B300's 288 GB fits MBS=4. Both clusters avoid the ~20% recompute overhead.
