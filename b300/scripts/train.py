@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
 """Qwen3-8B Pre-Training on B300 — Megatron-Bridge (NeMo 26.02)
 
 Uses the Megatron-Bridge recipe API with config objects.
