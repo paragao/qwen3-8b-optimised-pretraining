@@ -39,8 +39,8 @@ Symlinks required in some versions:
 sudo docker build -t my-image:latest .
 
 # 2. Import with enroot (requires sudo for Docker socket)
-sudo TMPDIR=/fsx/paragao/qwen3-8b/tmp \
-     ENROOT_TEMP_PATH=/fsx/paragao/qwen3-8b/tmp \
+sudo TMPDIR=/fsx/ubuntu/qwen3-8b/tmp \
+     ENROOT_TEMP_PATH=/fsx/ubuntu/qwen3-8b/tmp \
      enroot import --output /fsx/path/to/image.sqsh dockerd://my-image:latest
 
 # 3. Fix permissions
@@ -60,7 +60,7 @@ sudo chown $USER:$USER /fsx/path/to/image.sqsh
 On p5en clusters, Slurm binaries live at `/opt/slurm/bin/`. Always use full paths:
 ```bash
 /opt/slurm/bin/sbatch script.sh
-/opt/slurm/bin/squeue -u paragao
+/opt/slurm/bin/squeue -u ubuntu
 /opt/slurm/bin/scontrol show hostname $SLURM_NODELIST
 ```
 

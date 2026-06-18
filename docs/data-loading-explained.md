@@ -109,7 +109,7 @@ from multiprocessing import Pool, cpu_count
 from transformers import AutoTokenizer
 from datasets import load_dataset
 
-OUTPUT_DIR = "/fsx/paragao/qwen3-8b/datasets/c4"
+OUTPUT_DIR = "/fsx/ubuntu/qwen3-8b/datasets/c4"
 SEQ_LENGTH = 4096
 MODEL = "Qwen/Qwen3-8B"
 NUM_WORKERS = 96  # Use all physical cores on p5en
@@ -196,7 +196,7 @@ Each `.bin` shard is a flat array of `uint32` values:
 
 ```bash
 # Maximum striping for parallel reads across all OSTs
-lfs setstripe -c -1 -S 1M /fsx/paragao/qwen3-8b/datasets/c4/
+lfs setstripe -c -1 -S 1M /fsx/ubuntu/qwen3-8b/datasets/c4/
 ```
 
 With `-c -1` (stripe across ALL OSTs), a single 200 MB shard is distributed across every storage server. When 8+ DataLoader workers read different sequences simultaneously, they hit different OSTs — achieving aggregate I/O bandwidth close to the filesystem maximum.
@@ -274,7 +274,7 @@ class MmapShardDataset(Dataset):
 
 
 # Integration in training script:
-DATA_DIR = "/fsx/paragao/qwen3-8b/datasets/c4"
+DATA_DIR = "/fsx/ubuntu/qwen3-8b/datasets/c4"
 
 dataset = MmapShardDataset(DATA_DIR, seq_length=4096)
 

@@ -57,32 +57,32 @@
 ### 1. Build the Container
 
 ```bash
-cd /fsx/paragao/qwen3-8b/containers/
+cd /fsx/ubuntu/qwen3-8b/containers/
 # Copy h200/Dockerfile to the build context
 sudo docker build -t qwen3-8b-h200:latest -f Dockerfile .
 
 # Convert to Enroot squashfs (MUST use enroot import, never mksquashfs)
-sudo TMPDIR=/fsx/paragao/qwen3-8b/tmp ENROOT_TEMP_PATH=/fsx/paragao/qwen3-8b/tmp \
-  enroot import --output /fsx/paragao/qwen3-8b/containers/nemo-efa-25.07.sqsh \
+sudo TMPDIR=/fsx/ubuntu/qwen3-8b/tmp ENROOT_TEMP_PATH=/fsx/ubuntu/qwen3-8b/tmp \
+  enroot import --output /fsx/ubuntu/qwen3-8b/containers/nemo-efa-25.07.sqsh \
   dockerd://qwen3-8b-h200:latest
 
-sudo chown paragao:paragao /fsx/paragao/qwen3-8b/containers/nemo-efa-25.07.sqsh
+sudo chown ubuntu:ubuntu /fsx/ubuntu/qwen3-8b/containers/nemo-efa-25.07.sqsh
 ```
 
 ### 2. Setup FSx Paths
 
 ```bash
-mkdir -p /fsx/paragao/qwen3-8b/{logs,checkpoints,code,containers,tmp}
+mkdir -p /fsx/ubuntu/qwen3-8b/{logs,checkpoints,code,containers,tmp}
 # Copy training script
-cp h200/scripts/train.py /fsx/paragao/qwen3-8b/code/train_megatron.py
+cp h200/scripts/train.py /fsx/ubuntu/qwen3-8b/code/train_megatron.py
 ```
 
 ### 3. Submit Job
 
 ```bash
 /opt/slurm/bin/sbatch h200/scripts/run.sh
-/opt/slurm/bin/squeue -u paragao
-tail -f /fsx/paragao/qwen3-8b/logs/<JOB_ID>.out
+/opt/slurm/bin/squeue -u ubuntu
+tail -f /fsx/ubuntu/qwen3-8b/logs/<JOB_ID>.out
 ```
 
 ---

@@ -1,0 +1,38 @@
+# Credentials
+.env
+*.token
+secrets/
+
+# Containers
+*.sqsh
+
+# Checkpoints & model weights
+checkpoints/
+*.pt
+*.bin
+*.safetensors
+
+# Data
+datasets/
+*.idx
+*.npy
+
+# Logs
+logs/
+*.out
+*.err
+slurm-*.out
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

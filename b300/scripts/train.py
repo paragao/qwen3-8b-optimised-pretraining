@@ -50,12 +50,12 @@ def main():
     cfg.logger.log_interval = 5
     cfg.train.eval_interval = 1000
     cfg.train.eval_iters = 0
-    cfg.train.dir = "/fsx/ubuntu/paragao/qwen3-8b/checkpoints/b300"
+    cfg.train.dir = "/fsx/ubuntu/qwen3-8b/checkpoints/b300"
     cfg.train.save_interval = 1000
 
     # To use real data instead of mock:
     # cfg.data.mock = False
-    # cfg.data.data_path = "/fsx/ubuntu/paragao/qwen3-8b/datasets/c4/merged_text_document"
+    # cfg.data.data_path = "/fsx/ubuntu/qwen3-8b/datasets/c4/merged_text_document"
     # cfg.data.tokenizer_type = "HuggingFaceTokenizer"
     # cfg.data.tokenizer_model = "Qwen/Qwen3-8B"
 

@@ -28,7 +28,7 @@ Both clusters run pure data parallelism (DP=16) with distributed optimizer and o
 ```bash
 # 1. Build container
 cd h200/ && docker build -t qwen3-8b-h200:latest .
-sudo enroot import --output /fsx/paragao/qwen3-8b/containers/nemo-efa-25.07.sqsh dockerd://qwen3-8b-h200:latest
+sudo enroot import --output /fsx/ubuntu/qwen3-8b/containers/nemo-efa-25.07.sqsh dockerd://qwen3-8b-h200:latest
 
 # 2. Submit job
 /opt/slurm/bin/sbatch h200/scripts/run.sh
@@ -39,7 +39,7 @@ sudo enroot import --output /fsx/paragao/qwen3-8b/containers/nemo-efa-25.07.sqsh
 ```bash
 # 1. Build container
 cd b300/ && docker build -t qwen3-8b-b300:latest .
-sudo enroot import --output /fsx/paragao/qwen3-8b/containers/nemo-efa-26.02.sqsh dockerd://qwen3-8b-b300:latest
+sudo enroot import --output /fsx/ubuntu/qwen3-8b/containers/nemo-efa-26.02.sqsh dockerd://qwen3-8b-b300:latest
 
 # 2. Submit job
 sbatch b300/scripts/run.sh

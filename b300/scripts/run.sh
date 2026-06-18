@@ -7,9 +7,9 @@
 #SBATCH --exclusive
 #SBATCH --partition=b300
 #SBATCH --time=24:00:00
-#SBATCH --output=/fsx/ubuntu/paragao/qwen3-8b/logs/%j.out
-#SBATCH --error=/fsx/ubuntu/paragao/qwen3-8b/logs/%j.err
-#SBATCH --container-image=/fsx/paragao/qwen3-8b/containers/nemo-efa-26.02.sqsh
+#SBATCH --output=/fsx/ubuntu/qwen3-8b/logs/%j.out
+#SBATCH --error=/fsx/ubuntu/qwen3-8b/logs/%j.err
+#SBATCH --container-image=/fsx/ubuntu/qwen3-8b/containers/nemo-efa-26.02.sqsh
 #SBATCH --container-mounts=/fsx:/fsx
 
 # Resolve head node
@@ -34,4 +34,4 @@ srun --container-env=MASTER_ADDR,MASTER_PORT,FI_PROVIDER,NCCL_SOCKET_IFNAME,NCCL
     --rdzv-id=${SLURM_JOB_ID} \
     --rdzv-backend=c10d \
     --rdzv-endpoint=${MASTER_ADDR}:${MASTER_PORT} \
-    /fsx/ubuntu/paragao/qwen3-8b/code/train_bridge.py
+    /fsx/ubuntu/qwen3-8b/code/train_bridge.py

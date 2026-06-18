@@ -83,7 +83,7 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     """Build mock datasets for benchmarking.
 
     To switch to real data, replace MockGPTDataset with GPTDataset and provide:
-      --data-path /fsx/paragao/qwen3-8b/datasets/c4/merged_text_document
+      --data-path /fsx/ubuntu/qwen3-8b/datasets/c4/merged_text_document
       --tokenizer-type HuggingFaceTokenizer
       --tokenizer-model Qwen/Qwen3-8B
     """
@@ -156,8 +156,8 @@ if __name__ == "__main__":
             "log_interval": 5,
             "eval_interval": 1000,
             "eval_iters": 0,
-            "tensorboard_dir": "/fsx/paragao/qwen3-8b/tensorboard/h200",
-            "save": "/fsx/paragao/qwen3-8b/checkpoints/h200",
+            "tensorboard_dir": "/fsx/ubuntu/qwen3-8b/tensorboard/h200",
+            "save": "/fsx/ubuntu/qwen3-8b/checkpoints/h200",
             "save_interval": 1000,
             "tokenizer_type": "NullTokenizer",
             "vocab_size": 151936,

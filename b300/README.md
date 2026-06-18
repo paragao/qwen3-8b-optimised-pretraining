@@ -74,21 +74,21 @@ TP=2, DP=8, MBS=4: 868 TFLOP/s/GPU, 283K tok/s — **11% worse than TP=1**. Unne
 ### 1. Build the Container
 
 ```bash
-cd /fsx/paragao/qwen3-8b/containers/
+cd /fsx/ubuntu/qwen3-8b/containers/
 sudo docker build -t qwen3-8b-b300:latest -f Dockerfile .
 
-sudo TMPDIR=/fsx/paragao/qwen3-8b/tmp ENROOT_TEMP_PATH=/fsx/paragao/qwen3-8b/tmp \
-  enroot import --output /fsx/paragao/qwen3-8b/containers/nemo-efa-26.02.sqsh \
+sudo TMPDIR=/fsx/ubuntu/qwen3-8b/tmp ENROOT_TEMP_PATH=/fsx/ubuntu/qwen3-8b/tmp \
+  enroot import --output /fsx/ubuntu/qwen3-8b/containers/nemo-efa-26.02.sqsh \
   dockerd://qwen3-8b-b300:latest
 
-sudo chown ubuntu:ubuntu /fsx/paragao/qwen3-8b/containers/nemo-efa-26.02.sqsh
+sudo chown ubuntu:ubuntu /fsx/ubuntu/qwen3-8b/containers/nemo-efa-26.02.sqsh
 ```
 
 ### 2. Deploy Training Script
 
 ```bash
-mkdir -p /fsx/ubuntu/paragao/qwen3-8b/{logs,checkpoints,code}
-cp b300/scripts/train.py /fsx/ubuntu/paragao/qwen3-8b/code/train_bridge.py
+mkdir -p /fsx/ubuntu/qwen3-8b/{logs,checkpoints,code}
+cp b300/scripts/train.py /fsx/ubuntu/qwen3-8b/code/train_bridge.py
 ```
 
 ### 3. Submit Job
@@ -96,7 +96,7 @@ cp b300/scripts/train.py /fsx/ubuntu/paragao/qwen3-8b/code/train_bridge.py
 ```bash
 sbatch b300/scripts/run.sh
 squeue -u ubuntu
-tail -f /fsx/ubuntu/paragao/qwen3-8b/logs/<JOB_ID>.out
+tail -f /fsx/ubuntu/qwen3-8b/logs/<JOB_ID>.out
 ```
 
 ---
