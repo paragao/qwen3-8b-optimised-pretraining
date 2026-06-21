@@ -31,8 +31,8 @@ Both clusters are compute-saturated with perfect communication overlap. AllReduc
 
 ### Clone this repo and change it its directory
 ```bash
-git clone https://github.com/awslabs/awsome-distributed-ai.git
-cd awsome-distribued-ai
+git clone https://github.com/paragao/qwen3-8b-optimised-pretraining.git
+cd qwen3-8b-optimised-pretraining
 ```
 
 ### Prepare datasets (allenai/c4/en)
