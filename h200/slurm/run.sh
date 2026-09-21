@@ -13,8 +13,11 @@
 # Base run dir + container image (override via env). Must match the --output dir above.
 RUN_BASE="${RUN_BASE:-/fsx/paragao/new-cluster-test/run}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-${RUN_BASE}/containers/nemo-efa-26.04.sqsh}"
-# train.py resolved from this repo checkout (this script lives in h200/slurm/).
-TRAIN_PY="${TRAIN_PY:-$(cd "$(dirname "$0")/.." && pwd)/train.py}"
+# train.py resolved from the repo checkout on /fsx (mounted into the container).
+# Use SLURM_SUBMIT_DIR when available (sbatch copies this script to spool, so $0
+# is not the repo path); fall back to the known repo location.
+REPO_DIR="${REPO_DIR:-${SLURM_SUBMIT_DIR:-/fsx/paragao/new-cluster-test/qwen3-8b-optimised-pretraining/h200}}"
+TRAIN_PY="${TRAIN_PY:-${REPO_DIR}/train.py}"
 mkdir -p "${RUN_BASE}/logs"
 export RUN_BASE
 
