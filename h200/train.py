@@ -18,8 +18,13 @@ from megatron.bridge.recipes.qwen.qwen3 import qwen3_8b_pretrain_config
 from megatron.bridge.training.gpt_step import forward_step
 from megatron.bridge.training.pretrain import pretrain
 
-# Path to Megatron-indexed c4 dataset (prefix without .bin/.idx extension)
-DATA_PATH = "/fsx/ubuntu/qwen3-8b-pretraining/datasets/c4_qwen3_8b"
+# Base run directory (override with RUN_BASE env var). Datasets and checkpoints
+# live under it. Defaults to the new-cluster-test layout on FSx.
+RUN_BASE = os.environ.get("RUN_BASE", "/fsx/paragao/new-cluster-test/run")
+
+# Path to Megatron-indexed c4 dataset (prefix without .bin/.idx extension).
+DATA_PATH = os.environ.get("DATA_PATH", f"{RUN_BASE}/datasets/c4_qwen3_8b")
+CKPT_PATH = os.environ.get("CKPT_PATH", f"{RUN_BASE}/checkpoints/h200")
 
 def main():
     cfg = qwen3_8b_pretrain_config()
@@ -58,8 +63,8 @@ def main():
     cfg.logger.log_interval = 5
     cfg.validation.eval_interval = 1000
     cfg.validation.eval_iters = 0
-    cfg.checkpoint.save = "/fsx/ubuntu/qwen3-8b/checkpoints/h200"
-    cfg.checkpoint.load = "/fsx/ubuntu/qwen3-8b/checkpoints/h200"
+    cfg.checkpoint.save = CKPT_PATH
+    cfg.checkpoint.load = CKPT_PATH
     cfg.checkpoint.save_interval = 1000
 
     pretrain(config=cfg, forward_step_func=forward_step)

@@ -9,7 +9,7 @@
 #SBATCH --mem=0
 #SBATCH --time=02:00:00
 #SBATCH --exclusive
-#SBATCH --output=/fsx/ubuntu/qwen3-8b-pretraining/logs/preprocess-%j.out
+#SBATCH --output=/fsx/paragao/new-cluster-test/run/logs/preprocess-%j.out
 #SBATCH --export=ALL
 
 # --- HF_TOKEN must be set before submitting ---
@@ -21,29 +21,35 @@ if [ -z "$HF_TOKEN" ]; then
     exit 1
 fi
 
-export HF_HOME="/fsx/ubuntu/.cache/huggingface"
+# Base directory for all run artifacts (datasets, venv, cache, logs). Override with
+# RUN_BASE=/some/path sbatch preprocess.sh   (must match the --output dir above).
+RUN_BASE="${RUN_BASE:-/fsx/paragao/new-cluster-test/run}"
 
-mkdir -p /fsx/ubuntu/qwen3-8b-pretraining/logs
-mkdir -p /fsx/ubuntu/qwen3-8b-pretraining/datasets
+export HF_HOME="${RUN_BASE}/.cache/huggingface"
+
+mkdir -p "${RUN_BASE}/logs"
+mkdir -p "${RUN_BASE}/datasets"
 
 # Create a virtual environment for the preprocessing
-python3 -m venv /fsx/ubuntu/qwen3-8b-pretraining/venv
-source /fsx/ubuntu/qwen3-8b-pretraining/venv/bin/activate
+python3 -m venv "${RUN_BASE}/venv"
+source "${RUN_BASE}/venv/bin/activate"
 
-PYTHON=/fsx/ubuntu/qwen3-8b-pretraining/venv/bin/python
+PYTHON="${RUN_BASE}/venv/bin/python"
 SCRIPT_DIR=$SLURM_SUBMIT_DIR/preprocessing/
 SCRIPT="${SCRIPT_DIR}/preprocess.py"
 
 pip install -r $SCRIPT_DIR/requirements.txt
 
 echo "=== C4 Preprocessing ==="
-echo "Node: $(hostname) | CPUs: $(nproc) | Start: $(date)"
+echo "Node: $(hostname) | CPUs: $(nproc) | Base: ${RUN_BASE} | Start: $(date)"
 
 $PYTHON $SCRIPT \
-    --output-prefix /fsx/ubuntu/qwen3-8b-pretraining/datasets/c4_qwen3_8b \
+    --output-prefix "${RUN_BASE}/datasets/c4_qwen3_8b" \
     --tokenizer Qwen/Qwen3-8B \
     --num-tokens 1000000000 \
     --workers $(nproc) \
-    --cache-dir /fsx/ubuntu/qwen3-8b-pretraining/cache/c4
+    --cache-dir "${RUN_BASE}/cache/c4"
+
+echo "Finished: $(date)"
 
 echo "Finished: $(date)"
