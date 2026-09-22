@@ -13,7 +13,7 @@ Requirements:
     export HF_TOKEN=<your huggingface token>
 
 Usage:
-    python preprocess.py --output-prefix /fsx/ubuntu/qwen3-8b-pretraining/datasets/c4_qwen3_8b \
+    python preprocess.py --output-prefix /fsx/paragao/new-cluster-test/run/datasets/c4_qwen3_8b \
                          --num-tokens 1000000000 --workers 96
 """
 import argparse
@@ -35,12 +35,12 @@ _DTYPE_CODE = 4
 
 def parse_args():
     p = argparse.ArgumentParser(description="Download allenai/c4 and convert to Megatron indexed format")
-    p.add_argument("--output-prefix", default="/fsx/ubuntu/qwen3-8b-pretraining/datasets/c4_qwen3_8b",
+    p.add_argument("--output-prefix", default="/fsx/paragao/new-cluster-test/run/datasets/c4_qwen3_8b",
                    help="Output path prefix (creates <prefix>.bin and <prefix>.idx)")
     p.add_argument("--tokenizer", default="Qwen/Qwen3-8B", help="HuggingFace tokenizer name")
     p.add_argument("--num-tokens", type=int, default=1_000_000_000, help="Target number of tokens")
     p.add_argument("--workers", type=int, default=min(96, cpu_count()), help="Parallel workers")
-    p.add_argument("--cache-dir", default="/fsx/ubuntu/qwen3-8b-pretraining/cache/c4",
+    p.add_argument("--cache-dir", default="/fsx/paragao/new-cluster-test/run/cache/c4",
                    help="HuggingFace datasets cache directory")
     return p.parse_args()
 
