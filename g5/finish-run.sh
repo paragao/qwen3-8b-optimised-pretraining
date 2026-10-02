@@ -141,8 +141,28 @@ md5sum g5/train.py g5/run.sh g5/throughput.py 2>/dev/null | sed 's/^/    /' || \
   md5 -r g5/train.py g5/run.sh g5/throughput.py | sed 's/^/    /'
 
 say "Running the validation (this is the long step)"
+# Every architecture knob must be forwarded explicitly. ssh does not inherit
+# the caller's environment, so a variable that is not named here is SILENTLY
+# DROPPED and the remote run falls back to the `smoke` defaults in train.py --
+# which looks like a successful run of the profile you asked for. Keep this
+# list in sync with the -e flags in g5/run.sh.
+echo "    forwarding architecture: NUM_LAYERS='${NUM_LAYERS:-}' HIDDEN_SIZE='${HIDDEN_SIZE:-}'" \
+     "FFN_HIDDEN_SIZE='${FFN_HIDDEN_SIZE:-}' NUM_ATTENTION_HEADS='${NUM_ATTENTION_HEADS:-}'" \
+     "NUM_QUERY_GROUPS='${NUM_QUERY_GROUPS:-}' SEQ_LENGTH='${SEQ_LENGTH:-}'"
+echo "    (empty value => train.py default, i.e. the 'smoke' profile)"
 ssh "${SSH_OPTS[@]}" "${OS_USER}@${INSTANCE_ID}" \
-  "cd ${REMOTE_REPO} && TRAIN_ITERS='${TRAIN_ITERS:-20}' LOG_INTERVAL=1 HF_TOKEN='${HF_TOKEN:-}' ./g5/run.sh" \
+  "cd ${REMOTE_REPO} && \
+   TRAIN_ITERS='${TRAIN_ITERS:-20}' LOG_INTERVAL=1 HF_TOKEN='${HF_TOKEN:-}' \
+   NUM_LAYERS='${NUM_LAYERS:-}' \
+   HIDDEN_SIZE='${HIDDEN_SIZE:-}' \
+   FFN_HIDDEN_SIZE='${FFN_HIDDEN_SIZE:-}' \
+   NUM_ATTENTION_HEADS='${NUM_ATTENTION_HEADS:-}' \
+   NUM_QUERY_GROUPS='${NUM_QUERY_GROUPS:-}' \
+   SEQ_LENGTH='${SEQ_LENGTH:-}' \
+   MICRO_BATCH_SIZE='${MICRO_BATCH_SIZE:-}' \
+   GLOBAL_BATCH_SIZE='${GLOBAL_BATCH_SIZE:-}' \
+   DATA_PATH='${DATA_PATH:-}' \
+   ./g5/run.sh" \
   || echo "    run.sh exited non-zero -- the log is still parsed below for whatever it reached"
 
 say "Locating the log and parsing throughput on the instance"

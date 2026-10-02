@@ -118,22 +118,52 @@ check that the estimate can be trusted.
 
 The `Static` column is analytic and excludes activations. `smoke` was measured
 on 2026-10-02 at **6.84 GiB peak allocated / 7.26 GiB reserved** (30.9% of the
-card) against its 6.02 GiB estimate, so budget roughly **+14% over the static
-figure** for the other two profiles. `wider` and `deeper` are untested.
+card) against its 6.02 GiB estimate. `wider` and `deeper` are untested.
+
+To budget the untested profiles, use `g5/predict.py` rather than scaling the
+static figure by a flat percentage:
+
+```bash
+python3 g5/predict.py --profile wider    # 11.66 GiB predicted peak
+python3 g5/predict.py --self-check       # validate the models first
+```
+
+A flat "+14% over static" rule is the wrong *shape*, because the single largest
+activation — the FP32 vocab logits at `mbs x seq x 151936 x 4` — is **constant
+in `num_layers` and `hidden_size`** and so does not scale with static state at
+all. `predict.py` separates that term from the ones that do. For `wider` the
+two approaches differ by 0.32 GiB (11.66 vs 11.98 GiB), and
+`g5/results/wider-prediction.md` records disjoint thresholds so the next run
+discriminates between them.
 
 Measured `smoke` throughput: **24,757 tok/s median per step** (0.331 s/step,
 30.9 MODEL_TFLOP/s ≈ 24.7% MFU). See `g5/results/validation-run.md`.
+`predict.py`'s FLOP model reproduces that step to 0.04% and predicts
+**~14,400 tok/s** for `wider` (1.950x the FLOPs per step).
 
 All three keep `head_dim` at 128 and the GQA ratio at 4:1, as in Qwen3-8B.
 
 ```bash
-# wider
+# wider -- on the instance
 NUM_LAYERS=6 HIDDEN_SIZE=1536 FFN_HIDDEN_SIZE=4608 \
   NUM_ATTENTION_HEADS=12 NUM_QUERY_GROUPS=3 ./g5/run.sh
+
+# wider -- driven remotely from a laptop over SSH-via-SSM
+NUM_LAYERS=6 HIDDEN_SIZE=1536 FFN_HIDDEN_SIZE=4608 \
+  NUM_ATTENTION_HEADS=12 NUM_QUERY_GROUPS=3 \
+  TRAIN_ITERS=50 ./g5/finish-run.sh
 
 # deeper, longer sequence
 NUM_LAYERS=12 SEQ_LENGTH=2048 ./g5/run.sh
 ```
+
+`finish-run.sh` must name every variable explicitly when it builds the remote
+command, because **ssh does not inherit the caller's environment**. A knob that
+is not in that list is silently dropped and `train.py` falls back to its
+`smoke` default, which looks exactly like a successful run of the profile you
+asked for. Always confirm the `TOTAL` parameter line in the log matches the
+profile you intended (`wider` is 629.5 M, `smoke` is 359.4 M) before believing
+any number from the run.
 
 Pushing much past ~50% static leaves too little for activations and the FP32
 vocab logits, which are `SEQ_LENGTH x 151936 x 4 B` per micro-batch copy and are
