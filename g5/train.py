@@ -48,6 +48,7 @@ on g5.8xlarge. See `g5/README.md` for a table of profiles and measured memory.
 """
 import os
 import sys
+import time
 
 # Must precede any torch/megatron import: torch.compile is unsupported here.
 os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
@@ -269,14 +270,51 @@ def main():
         cfg.checkpoint.save = None
         cfg.checkpoint.load = None
 
+    # ---- Throughput denominator ----
+    # tokens/step is exactly global_batch_size * seq_length at DP=1. Print it
+    # before the run so the figure is in the log even if the run dies, and so
+    # g5/throughput.py does not have to re-derive the batch geometry.
+    tokens_per_step = cfg.train.global_batch_size * cfg.model.seq_length
+    if int(os.environ.get("RANK", "0")) == 0:
+        print(
+            f"  tokens per step       : {tokens_per_step:,} "
+            f"({cfg.train.global_batch_size} seq x {cfg.model.seq_length} tok)",
+            flush=True,
+        )
+        print(f"  train_iters           : {train_iters}", flush=True)
+
+    wall_start = time.perf_counter()
     pretrain(config=cfg, forward_step_func=forward_step)
+    wall_elapsed = time.perf_counter() - wall_start
 
     if int(os.environ.get("RANK", "0")) == 0:
         gib = 1024 ** 3
+        total_tokens = tokens_per_step * train_iters
         print("=" * 72, flush=True)
         print("VALIDATION COMPLETE", flush=True)
         print(f"  peak allocated : {torch.cuda.max_memory_allocated() / gib:.2f} GiB", flush=True)
         print(f"  peak reserved  : {torch.cuda.max_memory_reserved() / gib:.2f} GiB", flush=True)
+        print("  --- throughput ---", flush=True)
+        print(f"  tokens per step: {tokens_per_step:,}", flush=True)
+        print(f"  iterations     : {train_iters}", flush=True)
+        print(f"  total tokens   : {total_tokens:,}", flush=True)
+        # NOTE: wall_elapsed spans the whole pretrain() call, which includes
+        # model construction, dataloader build and CUDA warmup. Over a 20-iter
+        # validation that setup DOMINATES, so the figure below is a LOWER BOUND
+        # on steady-state throughput, not the steady-state rate. The
+        # authoritative per-step number comes from Megatron's own per-iteration
+        # timings -- parse them with:  python3 g5/throughput.py <logfile>
+        print(f"  wall clock     : {wall_elapsed:.1f} s (INCLUDES setup/warmup)", flush=True)
+        print(
+            f"  end-to-end     : {total_tokens / wall_elapsed:,.0f} tok/s "
+            "(LOWER BOUND -- setup included)",
+            flush=True,
+        )
+        print(
+            "  steady-state   : run  python3 g5/throughput.py <logfile>  "
+            "for the per-step rate",
+            flush=True,
+        )
         print("=" * 72, flush=True)
 
 

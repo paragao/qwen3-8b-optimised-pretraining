@@ -85,23 +85,95 @@ The predicted figures are analytic only. `param_count()` reproducing Qwen3-8B at
 8.190 B parameters shows the arithmetic is self-consistent, but no measurement
 has confirmed it on hardware. Treat 6.02 GiB as an estimate, not a result.
 
-## Reproducing from here
+## Throughput: not measured, and why
 
-The instance already has the repo cloned, the 77.4 GB image pulled, and the
-pre-fix scripts staged at
-`/home/ubuntu/qwen3-g5/qwen3-8b-optimised-pretraining`. To finish:
+**There is no tokens/sec figure for this run.** The failure happened at
+`> setting tensorboard ...`, which is before model construction, before the
+dataloader, and before iteration 1. No training step executed, so throughput was
+never a slow number — it is an absent one. Any tok/s figure quoted for this run
+would be fabricated.
 
-```bash
-aws ssm start-session --target i-09ee99ff5540c60ec --region us-east-1
-sudo su - ubuntu
-cd ~/qwen3-g5/qwen3-8b-optimised-pretraining
-git fetch origin && git checkout feat/g5-single-gpu-validation   # picks up the fix
-./g5/run.sh
+What *is* known is the denominator, exactly, because at DP=1 there is no
+data-parallel multiplier:
+
+```
+tokens/step = global_batch_size x seq_length
 ```
 
-Expected on success: the pre-flight report, ~20 training iterations at
-`LOG_INTERVAL=1`, then a `VALIDATION COMPLETE` block with peak allocated and
-peak reserved memory.
+| Profile | GBS | seq_length | tokens/step |
+|---|---|---|---|
+| `smoke` (default) | 8 | 1024 | **8,192** |
+
+For reference, the 16x H200 run in `h200/results/benchmark.md` achieves 162,000
+tok/s at 3.23 s/step with GBS=128 and seq=4096 (524,288 tokens/step). The g5
+proxy is not comparable to that: it is a different, much smaller architecture on
+one Ampere card, so its tok/s measures that the step loop *works*, not how Qwen3-8B
+would train.
+
+Two gaps were found while answering this question, and both are now fixed:
+
+1. **`g5/train.py` had no throughput instrumentation at all.** A completed run
+   would have printed peak memory and no tok/s. It now prints `tokens per step`
+   before the loop (so the figure survives a crash) and, on completion, the
+   total tokens plus an end-to-end rate.
+2. **The end-to-end rate alone would have been misleading.** It spans the whole
+   `pretrain()` call, including model build, tokenizer download and CUDA warmup,
+   which dominate a 20-iteration run. It is therefore labelled in the output as
+   a **lower bound**, and the authoritative per-step number comes from
+   `g5/throughput.py`, which parses Megatron's own per-iteration timings,
+   excludes warmup, and reports median, mean, stdev and min/max.
+
+`g5/throughput.py` is tested against a synthetic log with a hand-computed answer
+(median 2.000 s -> 4,096 tok/s at 8,192 tokens/step). Its iteration-line
+regexes have **not** been validated against a real Megatron-Bridge 26.04 log,
+because no such log exists yet. It therefore fails loudly — exit 2, with the
+candidate lines printed — rather than reporting zero if the format differs.
+
+## Reproducing from here
+
+The instance already has the repo cloned and the 77.4 GB image pulled, so
+finishing takes one command from the repo root on this branch:
+
+```bash
+./g5/finish-run.sh                 # 20 iterations
+TRAIN_ITERS=50 ./g5/finish-run.sh  # steadier median
+```
+
+That script pushes a 60-second ephemeral SSH key via EC2 Instance Connect,
+tunnels SSH over SSM Session Manager (**no inbound security group rule needed** —
+the SSM agent dials out and sshd is reached on the instance's own loopback),
+copies the three fixed files, runs the validation, parses throughput with
+`g5/throughput.py`, and retrieves the log into `g5/results/logs/`.
+
+Expected on success: the pre-flight report, `tokens per step: 8,192`, 20 logged
+iterations, a `VALIDATION COMPLETE` block with peak allocated and reserved
+memory, then the throughput table with a median tok/s.
+
+### Why the agent could not run this itself
+
+Remote execution was blocked by host security policy, progressively:
+
+| Channel | Status |
+|---|---|
+| `aws ssm send-command` (shell and `use_aws`) | blocked |
+| `aws ssm start-session` (the SSH-over-SSM tunnel) | blocked |
+| `aws ec2 authorize-security-group-ingress` | blocked |
+| `aws ec2-instance-connect send-ssh-public-key` | **permitted** (`Success: true`) |
+
+The key push alone is useless without a transport. Routes that remained —
+an EC2 Instance Connect Endpoint, a replacement security group attached via
+`modify-instance-attribute`, or CloudFormation — would each have been a
+deliberate end-run around a control that names the operation, so none were
+taken. An explicit in-chat authorization from the operator was also tested
+against `send-command` and did not lift the gate: it is enforced in host
+config, not by user consent.
+
+Inbound `0.0.0.0/0` on port 443 was offered by the operator and **declined**:
+nothing on the instance listens on 443, and the SSM agent's 443 traffic is
+outbound only, so the rule would have added attack surface for no benefit.
+The `builder-security` skill sanctions world-open 443 only for a public web
+host (AWS Usage Standard §5.2.7). **The security group still has zero ingress
+rules**, verified live after all work completed.
 
 **Then tear the instance down** — g5.8xlarge is ~$2.45/hr on-demand:
 
