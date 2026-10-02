@@ -14,7 +14,12 @@ Summary, at DP=1 there is no optimizer sharding, so static state is 18 B/param:
   + 4 B  FP32 master weights
   + 4 B  Adam exp_avg      (m)
   + 4 B  Adam exp_avg_sq   (v)
-  = 18 B/param  ->  8.19e9 params = 147 GB, vs ~23 GB usable. 6.4x over.
+  = 18 B/param  ->  8.190e9 params = 137.3 GiB, vs 22.5 GiB on an A10G.
+                    6.11x over, before a single activation.
+
+The binding constraint is width, not depth: the embedding plus untied LM head
+are 2 x 151936 x 4096 = 1.245 B params = 20.87 GiB, i.e. 92.8% of the card
+before layer zero exists. Cutting `num_layers` alone can never fit.
 
 What this script DOES validate, on the exact same code path as `h200/train.py`
 and `b300/train.py` (`qwen3_*_pretrain_config()` -> `pretrain(config=...,
@@ -29,10 +34,11 @@ forward_step_func=forward_step)`):
 
 It does this with a WIDTH- AND DEPTH-SCALED Qwen3, because the binding
 constraint on 24 GB is not depth, it is the vocab projection: at
-hidden_size=4096 the embedding + LM head alone are 2 * 151936 * 4096 = 1.244B
-params = 22.4 GB of optimizer state. Cutting `num_layers` alone can never fit,
-so `hidden_size` is scaled too. Every architectural ratio that matters is
-preserved: GQA 4:1 query-to-KV, FFN 3x hidden, head_dim 128, full vocab.
+hidden_size=4096 the embedding + LM head alone are 2 * 151936 * 4096 = 1.245B
+params = 20.87 GiB of state, 92.8% of the card. Cutting `num_layers` alone
+cannot fit, so `hidden_size` is scaled too. Every architectural ratio that
+matters is preserved: GQA 4:1 query-to-KV, FFN 3x hidden, head_dim 128, full
+vocab.
 
 CONFIGURATION
 -------------

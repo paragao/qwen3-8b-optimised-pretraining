@@ -18,15 +18,21 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTANCE_ID="${1:-}"
 if [[ -z "${INSTANCE_ID}" ]]; then
   if [[ -f "${HERE}/.last-instance-id" ]]; then
-    INSTANCE_ID="$(cat "${HERE}/.last-instance-id")"
-    echo "Using instance id from ${HERE}/.last-instance-id: ${INSTANCE_ID}"
+    # Written by launch-instance.sh as INSTANCE_ID=... / REGION=... . The region
+    # matters: GPU capacity often forces a region other than the default, and a
+    # teardown aimed at the wrong one leaves the instance running and billing.
+    # shellcheck disable=SC1091
+    source "${HERE}/.last-instance-id"
+    REGION="${REGION:-us-west-2}"
+    echo "Using ${HERE}/.last-instance-id: ${INSTANCE_ID} in ${REGION}"
   else
     echo "FATAL: no instance id given and ${HERE}/.last-instance-id is absent." >&2
-    echo "       Find it with:" >&2
-    echo "       aws ec2 describe-instances --region ${REGION} \\" >&2
-    echo "         --filters Name=tag:Purpose,Values=qwen3-single-gpu-stack-validation \\" >&2
-    echo "                   Name=instance-state-name,Values=running,stopped \\" >&2
-    echo "         --query 'Reservations[].Instances[].InstanceId' --output text" >&2
+    echo "       Sweep every region for orphaned validation instances with:" >&2
+    echo "       for r in \$(aws ec2 describe-regions --query 'Regions[].RegionName' --output text); do \\" >&2
+    echo "         aws ec2 describe-instances --region \$r \\" >&2
+    echo "           --filters Name=tag:Purpose,Values=qwen3-single-gpu-stack-validation \\" >&2
+    echo "                     Name=instance-state-name,Values=pending,running,stopping,stopped \\" >&2
+    echo "           --query \"Reservations[].Instances[].[InstanceId,'\$r']\" --output text; done" >&2
     exit 1
   fi
 fi

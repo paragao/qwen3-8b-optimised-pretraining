@@ -70,26 +70,34 @@ if [[ -z "${VPC_ID}" || "${VPC_ID}" == "None" ]]; then
   echo "FATAL: no default VPC in ${REGION}; set SUBNET_ID and VPC_ID manually" >&2; exit 1
 fi
 
-# Pick a public subnet in an AZ that actually offers the instance type.
-if [[ -z "${SUBNET_ID:-}" ]]; then
+# Build the candidate subnet list: every public subnet in an AZ that offers the
+# instance type. GPU capacity is frequently exhausted in a given AZ, so we try
+# them in turn rather than failing on the first InsufficientInstanceCapacity.
+CANDIDATE_SUBNETS=()
+if [[ -n "${SUBNET_ID:-}" ]]; then
+  CANDIDATE_SUBNETS=("${SUBNET_ID}")
+else
   OFFERED_AZS="$(aws ec2 describe-instance-type-offerings \
     --location-type availability-zone \
     --filters Name=instance-type,Values="${INSTANCE_TYPE}" \
     --query 'InstanceTypeOfferings[].Location' --output text)"
-  SUBNET_ID=""
   for az in ${OFFERED_AZS}; do
+    # Skip Local Zones (e.g. us-west-2-lax-1a): different capacity pool and no
+    # default-VPC subnet.
+    case "${az}" in *-[a-z][a-z][a-z]-[0-9][a-z]) continue ;; esac
     candidate="$(aws ec2 describe-subnets \
       --filters Name=vpc-id,Values="${VPC_ID}" \
                 Name=availability-zone,Values="${az}" \
                 Name=map-public-ip-on-launch,Values=true \
       --query 'Subnets[0].SubnetId' --output text 2>/dev/null || true)"
     if [[ -n "${candidate}" && "${candidate}" != "None" ]]; then
-      SUBNET_ID="${candidate}"; echo "    using ${az} -> ${SUBNET_ID}"; break
+      CANDIDATE_SUBNETS+=("${candidate}")
+      echo "    candidate ${az} -> ${candidate}"
     fi
   done
 fi
-if [[ -z "${SUBNET_ID}" || "${SUBNET_ID}" == "None" ]]; then
-  echo "FATAL: no public subnet found in an AZ offering ${INSTANCE_TYPE}" >&2; exit 1
+if [[ ${#CANDIDATE_SUBNETS[@]} -eq 0 ]]; then
+  echo "FATAL: no public subnet found in any AZ offering ${INSTANCE_TYPE}" >&2; exit 1
 fi
 
 SG_NAME="${NAME}-sg"
@@ -119,18 +127,48 @@ echo "    verified: 0 ingress rules"
 
 # ---------------------------------------------------------------------- launch
 echo "==> launching 1x ${INSTANCE_TYPE}"
-INSTANCE_ID="$(aws ec2 run-instances \
-  --image-id "${AMI_ID}" \
-  --instance-type "${INSTANCE_TYPE}" \
-  --subnet-id "${SUBNET_ID}" \
-  --security-group-ids "${SG_ID}" \
-  --iam-instance-profile "Name=${ROLE_NAME}" \
-  --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
-  --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${ROOT_VOLUME_GB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true,\"Encrypted\":true}}]" \
-  --tag-specifications \
-      "ResourceType=instance,Tags=[{Key=Name,Value=${NAME}},{Key=Purpose,Value=qwen3-single-gpu-stack-validation},{Key=Ephemeral,Value=true}]" \
-  --count 1 \
-  --query 'Instances[0].InstanceId' --output text)"
+INSTANCE_ID=""
+LAUNCH_ERR="$(mktemp)"
+trap 'rm -f "${LAUNCH_ERR}"' EXIT
+
+for subnet in "${CANDIDATE_SUBNETS[@]}"; do
+  az="$(aws ec2 describe-subnets --subnet-ids "${subnet}" \
+    --query 'Subnets[0].AvailabilityZone' --output text)"
+  echo "    trying ${az} (${subnet})"
+  if INSTANCE_ID="$(aws ec2 run-instances \
+      --image-id "${AMI_ID}" \
+      --instance-type "${INSTANCE_TYPE}" \
+      --subnet-id "${subnet}" \
+      --security-group-ids "${SG_ID}" \
+      --iam-instance-profile "Name=${ROLE_NAME}" \
+      --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
+      --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${ROOT_VOLUME_GB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true,\"Encrypted\":true}}]" \
+      --tag-specifications \
+          "ResourceType=instance,Tags=[{Key=Name,Value=${NAME}},{Key=Purpose,Value=qwen3-single-gpu-stack-validation},{Key=Ephemeral,Value=true}]" \
+      --count 1 \
+      --query 'Instances[0].InstanceId' --output text 2>"${LAUNCH_ERR}")"; then
+    SUBNET_ID="${subnet}"
+    echo "    launched in ${az}: ${INSTANCE_ID}"
+    break
+  fi
+
+  # Capacity is the one error worth trying another AZ for. Anything else
+  # (quota, permissions, bad AMI) will fail identically everywhere, so stop.
+  if grep -q "InsufficientInstanceCapacity\|Unsupported" "${LAUNCH_ERR}"; then
+    echo "    no capacity in ${az}, trying the next AZ"
+    INSTANCE_ID=""
+    continue
+  fi
+  echo "FATAL: run-instances failed for a reason unrelated to capacity:" >&2
+  cat "${LAUNCH_ERR}" >&2
+  exit 1
+done
+
+if [[ -z "${INSTANCE_ID}" || "${INSTANCE_ID}" == "None" ]]; then
+  echo "FATAL: no ${INSTANCE_TYPE} capacity in any candidate AZ." >&2
+  echo "       Retry later, or try another region with REGION=... ." >&2
+  exit 1
+fi
 echo "    INSTANCE_ID=${INSTANCE_ID}"
 
 echo "==> waiting for instance to reach running + status ok"
@@ -160,4 +198,10 @@ echo " sg       : ${SG_ID}  (0 ingress rules)"
 echo " connect  : aws ssm start-session --target ${INSTANCE_ID} --region ${REGION}"
 echo " TEARDOWN : ./g5/terminate-instance.sh ${INSTANCE_ID}"
 echo "================================================================"
-echo "${INSTANCE_ID}" > "$(dirname "${BASH_SOURCE[0]}")/.last-instance-id"
+# Record the REGION as well as the id: the instance is not necessarily in the
+# default region (GPU capacity often forces another), and a teardown pointed at
+# the wrong region silently leaves a billing instance running.
+cat > "$(dirname "${BASH_SOURCE[0]}")/.last-instance-id" <<EOF
+INSTANCE_ID=${INSTANCE_ID}
+REGION=${REGION}
+EOF
