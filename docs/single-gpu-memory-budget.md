@@ -122,6 +122,15 @@ Proxy totals: **359.4 M params -> 6.02 GiB static (18 B/param), 26.8% of a
 logits, which at `seq=1024` are `1024 x 151936 x 4 B = 622 MB` per micro-batch
 copy and are the largest single activation in the model.
 
+**Measured 2026-10-02** (50 iterations on an A10G, log
+`g5/results/run-20261002-162239.log`): peak allocated **6.84 GiB**, peak
+reserved **7.26 GiB**. So the analytic static figure was low by 0.82 GiB
+(13.6%), and that gap is the activation term this table does not model. It is
+consistent with the 622 MB logits estimate above being the dominant activation,
+leaving ~218 MB for everything else plus allocator workspace — which is a point
+in favour of the logits analysis, though it does not isolate the term. Treat
+18 B/param as a **floor** and add an activation margin when sizing.
+
 ## What this validates, and what it does not
 
 Validated on g5.8xlarge:

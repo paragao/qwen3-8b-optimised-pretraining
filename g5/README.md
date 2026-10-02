@@ -116,6 +116,14 @@ check that the estimate can be trusted.
 | `wider` | 6 | 1536 | 4608 | 12/3 | 1024 | 629.5 M | 10.55 GiB | 46.9% |
 | `deeper` | 12 | 1024 | 3072 | 8/2 | 2048 | 455.9 M | 7.64 GiB | 34.0% |
 
+The `Static` column is analytic and excludes activations. `smoke` was measured
+on 2026-10-02 at **6.84 GiB peak allocated / 7.26 GiB reserved** (30.9% of the
+card) against its 6.02 GiB estimate, so budget roughly **+14% over the static
+figure** for the other two profiles. `wider` and `deeper` are untested.
+
+Measured `smoke` throughput: **24,757 tok/s median per step** (0.331 s/step,
+30.9 MODEL_TFLOP/s ≈ 24.7% MFU). See `g5/results/validation-run.md`.
+
 All three keep `head_dim` at 128 and the GQA ratio at 4:1, as in Qwen3-8B.
 
 ```bash

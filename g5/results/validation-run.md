@@ -72,62 +72,123 @@ Fixed in two places:
 Both edits are verified locally (`python3 -m py_compile`, `bash -n`) and
 committed. Neither has been exercised on the instance.
 
-## Not yet verified
+## Previously unverified — now closed
 
-The failure happened *before* model construction, so these remain open:
+The first run failed *before* model construction, leaving these open. **All four
+were closed by the completed run of 2026-10-02 15:22 UTC** (log:
+`g5/results/run-20261002-162239.log`, 50/50 iterations):
 
-- Qwen3 model build on `sm_86` — GQA, RoPE, RMSNorm, SwiGLU kernel paths
-- the mock dataset / dataloader
-- a forward -> backward -> Adam optimizer step, and loss movement
-- **measured** peak memory against the predicted 6.02 GiB static
+| Open item | Result |
+|---|---|
+| Qwen3 model build on `sm_86` — GQA, RoPE, RMSNorm, SwiGLU | **confirmed**, 50 steps, 0 skipped, 0 NaN |
+| mock dataset / dataloader | **confirmed**, `MockGPTDataset` sizes `(400, 0, 0)` |
+| forward -> backward -> Adam step, loss movement | **confirmed**, loss responded, grad norm 1.0–3.8 |
+| measured peak memory vs predicted 6.02 GiB static | **6.84 GiB allocated / 7.26 GiB reserved** |
 
-The predicted figures are analytic only. `param_count()` reproducing Qwen3-8B at
-8.190 B parameters shows the arithmetic is self-consistent, but no measurement
-has confirmed it on hardware. Treat 6.02 GiB as an estimate, not a result.
-
-## Throughput: not measured, and why
-
-**There is no tokens/sec figure for this run.** The failure happened at
-`> setting tensorboard ...`, which is before model construction, before the
-dataloader, and before iteration 1. No training step executed, so throughput was
-never a slow number — it is an absent one. Any tok/s figure quoted for this run
-would be fabricated.
-
-What *is* known is the denominator, exactly, because at DP=1 there is no
-data-parallel multiplier:
+### Memory: prediction vs measurement
 
 ```
-tokens/step = global_batch_size x seq_length
+predicted static (18 B/param)   6.02 GiB   <- analytic, weights+grads+Adam+master
+measured peak allocated         6.84 GiB
+                                --------
+activations + workspace         0.82 GiB   (13.6% on top of static)
 ```
 
-| Profile | GBS | seq_length | tokens/step |
-|---|---|---|---|
-| `smoke` (default) | 8 | 1024 | **8,192** |
+The analytic model was therefore **low by 13.6%**, and the gap is exactly the
+term it does not model: activations and allocator workspace. For sizing work,
+treat the 18 B/param figure as a floor and add an activation margin. Peak
+reserved (7.26 GiB) sits 0.42 GiB above allocated, which is allocator
+fragmentation, not model state.
 
-For reference, the 16x H200 run in `h200/results/benchmark.md` achieves 162,000
-tok/s at 3.23 s/step with GBS=128 and seq=4096 (524,288 tokens/step). The g5
-proxy is not comparable to that: it is a different, much smaller architecture on
-one Ampere card, so its tok/s measures that the step loop *works*, not how Qwen3-8B
-would train.
+At 6.84 GiB the proxy uses **30.9% of the A10G's 22.1 GiB usable**, so the card
+had ample headroom — the scaling was conservative.
 
-Two gaps were found while answering this question, and both are now fixed:
+## Throughput: measured
+
+Measured on the completed run of 2026-10-02 15:22 UTC, 50/50 iterations,
+parsed by `g5/throughput.py` from Megatron's own per-iteration timings with
+iteration 1 excluded as warmup (2.207 s against a 0.331 s steady state):
+
+| Metric | Value |
+|---|---|
+| **tokens/sec per training step (median)** | **24,757 tok/s** |
+| mean / stdev | 24,754 / 47 tok/s |
+| min / max | 24,490 / 24,817 tok/s |
+| median step time | 0.331 s |
+| stdev of step time | 0.001 s (0.3% — very stable) |
+| steady-state steps | 49 of 50 |
+| tokens/step | 8,192 (GBS 8 x seq 1024) |
+| reported compute | 30.9 MODEL_TFLOP/s/GPU ≈ **24.7% MFU** of A10G BF16 dense peak (125 TFLOP/s) |
+
+Two independent cross-checks agree, so the figure is not a parser artefact:
+`8192 / 0.331 = 24,749 tok/s` by hand against the parser's 24,757 tok/s, and
+Megatron's own `Step Time : 0.33s` line matches its `elapsed time per iteration
+(ms): 331.2`.
+
+### Why the end-to-end rate is much lower
+
+```
+end-to-end     13,912 tok/s   (29.4 s wall, setup included)
+steady-state   24,757 tok/s   (per-step, warmup excluded)
+```
+
+The end-to-end number is **1.78x pessimistic** because ~11.0 s of the 29.4 s
+wall clock is one-off setup — model build, tokenizer download, dataset index
+compilation (7.17 s on its own), CUDA warmup. At 50 iterations that overhead is
+38% of the run. Quote the steady-state median; the end-to-end figure is only a
+lower bound and is labelled as such in the output.
+
+### What this number does and does not mean
+
+It measures that **the step loop works and is stable on an A10G** at a given
+proxy size. It is **not** a Qwen3-8B throughput figure and must not be
+extrapolated to one: the proxy is 4 layers at hidden 1024 (359 M params) against
+36 layers at hidden 4096 (8.19 B params), on one Ampere card rather than
+Hopper, and Qwen3-8B cannot run here at all (see
+`docs/single-gpu-memory-budget.md`).
+
+For contrast, the 16x H200 run in `h200/results/benchmark.md` reaches 162,000
+tok/s at 3.23 s/step with GBS=128 and seq=4096 (524,288 tokens/step) — a
+different architecture, precision regime and parallelism, and not comparable.
+
+### The loss curve is NOT evidence of learning
+
+Loss moved 12.1481 -> 0.2801 over 50 iterations. **This does not show the model
+learning anything**, and reading it that way would be a mistake. The data source
+is Megatron's synthetic mock dataset, confirmed in the log:
+
+```
+dataset: Megatron mock dataset (set DATA_PATH for real c4)
+Let mock = True, as both blend and blend_per_split are None
+Building MockGPTDataset splits with sizes=(400, 0, 0)
+```
+
+The iteration-1 loss of 12.1481 sits just above `ln(151936) = 11.9312`, i.e.
+uniform random guessing over the full vocab, which is the expected starting
+point. The subsequent collapse to 0.28 on only 400 synthetic samples is
+degenerate fitting of trivially predictable mock tokens, not convergence.
+
+The valid conclusions from the loss trace are narrower and still useful:
+gradients flow, the optimizer updates weights, the LR schedule is applied
+(6.0e-05 warmup -> 3.0e-05), and **0 skipped / 0 NaN iterations** across all 50
+steps — so no numerical instability in the BF16 path on `sm_86`. Judging real
+convergence requires `DATA_PATH` pointed at real c4 tokens.
+
+### Instrumentation gaps found while answering this, both fixed
 
 1. **`g5/train.py` had no throughput instrumentation at all.** A completed run
    would have printed peak memory and no tok/s. It now prints `tokens per step`
-   before the loop (so the figure survives a crash) and, on completion, the
-   total tokens plus an end-to-end rate.
-2. **The end-to-end rate alone would have been misleading.** It spans the whole
-   `pretrain()` call, including model build, tokenizer download and CUDA warmup,
-   which dominate a 20-iteration run. It is therefore labelled in the output as
-   a **lower bound**, and the authoritative per-step number comes from
-   `g5/throughput.py`, which parses Megatron's own per-iteration timings,
-   excludes warmup, and reports median, mean, stdev and min/max.
+   before the loop (so the figure survives a crash) and, on completion, total
+   tokens plus an end-to-end rate.
+2. **The end-to-end rate alone would have been misleading** — measured at 1.78x
+   pessimistic above. It is labelled a lower bound in the output, with the
+   authoritative per-step number coming from `g5/throughput.py`.
 
-`g5/throughput.py` is tested against a synthetic log with a hand-computed answer
-(median 2.000 s -> 4,096 tok/s at 8,192 tokens/step). Its iteration-line
-regexes have **not** been validated against a real Megatron-Bridge 26.04 log,
-because no such log exists yet. It therefore fails loudly — exit 2, with the
-candidate lines printed — rather than reporting zero if the format differs.
+`g5/throughput.py` was tested pre-run against a synthetic log with a
+hand-computed answer (median 2.000 s -> 4,096 tok/s). Its iteration-line
+regexes are **now validated against a real Megatron-Bridge 26.04 log**: it
+parsed all 50 iterations, identified the warmup step, and its median agreed
+with the hand cross-check to within 8 tok/s (0.03%).
 
 ## Reproducing from here
 
@@ -150,6 +211,13 @@ iterations, a `VALIDATION COMPLETE` block with peak allocated and reserved
 memory, then the throughput table with a median tok/s.
 
 ### Why the agent could not run this itself
+
+**The operator ran `g5/finish-run.sh` from their own terminal on 2026-10-02 at
+15:21 UTC and it completed cleanly** — that is the source of every measured
+number above. The agent could not invoke it, for the reasons below. Note that
+the script's own transport is `aws ssm start-session` (line 87), so the agent
+running the script would have smuggled the blocked call past the policy inside
+a file rather than satisfied the control; it declined on that basis.
 
 Remote execution was blocked by host security policy, progressively:
 
@@ -191,5 +259,7 @@ rules**, verified live after all work completed.
 | Stack imports + CUDA init on sm_86 | **confirmed** |
 | Recipe API + scaled config | **confirmed** |
 | Qwen3 tokenizer + 151,936 vocab | **confirmed** |
-| Model build / training step / peak memory | **not run** — fix committed, re-run needed |
+| Model build / training step | **confirmed** — 50/50 iterations, 0 skipped, 0 NaN |
+| Measured peak memory | **confirmed** — 6.84 GiB allocated / 7.26 GiB reserved |
+| Measured throughput | **confirmed** — 24,757 tok/s median per step (0.331 s) |
 | Instance terminated | see teardown command above |
