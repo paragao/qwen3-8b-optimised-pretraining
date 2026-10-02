@@ -141,6 +141,13 @@ md5sum g5/train.py g5/run.sh g5/throughput.py 2>/dev/null | sed 's/^/    /' || \
   md5 -r g5/train.py g5/run.sh g5/throughput.py | sed 's/^/    /'
 
 say "Running the validation (this is the long step)"
+# Record the newest existing log FIRST. If this run dies before writing its own
+# log, the `ls -t | head -1` below would otherwise pick up the PREVIOUS run's
+# log and parse it -- reporting the old profile's throughput as if it were this
+# run's result. The guard after the run refuses to parse a stale file.
+PRE_RUN_LOG=$(ssh "${SSH_OPTS[@]}" "${OS_USER}@${INSTANCE_ID}" \
+  'ls -t /home/ubuntu/qwen3-g5/run/logs/*.log 2>/dev/null | head -1' || true)
+echo "    newest log before this run: ${PRE_RUN_LOG:-<none>}"
 # Every architecture knob must be forwarded explicitly. ssh does not inherit
 # the caller's environment, so a variable that is not named here is SILENTLY
 # DROPPED and the remote run falls back to the `smoke` defaults in train.py --
@@ -173,7 +180,17 @@ if [ -z "\${log}" ]; then
   echo "FATAL: no log file found under /home/ubuntu/qwen3-g5/run/logs/" >&2
   exit 1
 fi
-echo "    log: \${log}"
+if [ "\${log}" = "${PRE_RUN_LOG}" ]; then
+  echo "FATAL: the newest log (\${log}) is the SAME file that existed before" >&2
+  echo "       this run started. This run wrote no log of its own, so anything" >&2
+  echo "       parsed from it belongs to the PREVIOUS run, not this one." >&2
+  echo "       Refusing to report a stale result." >&2
+  exit 1
+fi
+echo "    log: \${log}  (new, distinct from the pre-run log)"
+echo
+echo "    --- resolved geometry: confirm this is the profile you asked for ---"
+grep -E "num_layers|hidden_size|ffn_hidden_size|num_attention_heads|num_query_groups|seq_length|TOTAL " "\${log}" || true
 echo
 grep -E "VALIDATION COMPLETE|peak allocated|peak reserved|tokens per step|end-to-end|wall clock" "\${log}" || true
 echo
@@ -186,6 +203,12 @@ say "Retrieving the log to g5/results/ for the record"
 # g5/results/ with a timestamped name instead.
 remote_log=$(ssh "${SSH_OPTS[@]}" "${OS_USER}@${INSTANCE_ID}" \
   'ls -t /home/ubuntu/qwen3-g5/run/logs/*.log 2>/dev/null | head -1')
+if [[ -n "${remote_log}" && "${remote_log}" == "${PRE_RUN_LOG}" ]]; then
+  echo "    SKIPPED: the newest remote log is the pre-run log (${remote_log})." >&2
+  echo "    This run produced no log of its own; not copying a stale file into" >&2
+  echo "    g5/results/ where it would look like a fresh result." >&2
+  remote_log=""
+fi
 if [[ -n "${remote_log}" ]]; then
   local_log="g5/results/run-$(date +%Y%m%d-%H%M%S).log"
   scp "${SSH_OPTS[@]}" -q "${OS_USER}@${INSTANCE_ID}:${remote_log}" "${local_log}"
