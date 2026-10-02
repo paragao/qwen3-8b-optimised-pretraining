@@ -87,15 +87,16 @@ docker run --rm \
   -e LOG_INTERVAL="${LOG_INTERVAL:-}" \
   -e DATA_NUM_WORKERS="${DATA_NUM_WORKERS:-}" \
   -e SAVE_CHECKPOINT="${SAVE_CHECKPOINT:-0}" \
+  -e TENSORBOARD_DIR="${TENSORBOARD_DIR:-/workspace/run/tb_logs}" \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -e HF_HOME=/workspace/run/hf \
   -e TORCH_COMPILE_DISABLE=1 \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e CUDA_DEVICE_MAX_CONNECTIONS=1 \
-  -w /workspace/repo \
+  -w /workspace/run \
   "${CONTAINER_IMAGE}" \
   torchrun --nproc_per_node=1 --nnodes=1 \
     --master_addr=127.0.0.1 --master_port=29500 \
-    g5/train.py 2>&1 | tee "${LOG_FILE}"
+    /workspace/repo/g5/train.py 2>&1 | tee "${LOG_FILE}"
 
 echo "Log saved to ${LOG_FILE}"

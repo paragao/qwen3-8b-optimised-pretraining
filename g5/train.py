@@ -249,6 +249,15 @@ def main():
 
     # ---- Logging; checkpointing off by default to keep the run quick ----
     cfg.logger.log_interval = _env_int("LOG_INTERVAL", 1)
+    # The recipe defaults tensorboard_dir to a CWD-relative
+    # './nemo_experiments/default/tb_logs'. g5/run.sh mounts the repo read-only,
+    # so leaving that default makes the run die with
+    #   OSError: [Errno 30] Read-only file system: '/workspace/repo/nemo_experiments'
+    # at "setting tensorboard", after the model and tokenizer have already been
+    # built. Point it at RUN_BASE, which is writable by construction.
+    tb_dir = os.environ.get("TENSORBOARD_DIR", f"{RUN_BASE}/tb_logs")
+    os.makedirs(tb_dir, exist_ok=True)
+    cfg.logger.tensorboard_dir = tb_dir
     cfg.validation.eval_interval = train_iters + 1  # never mid-run
     cfg.validation.eval_iters = 0
     if os.environ.get("SAVE_CHECKPOINT", "0") == "1":
