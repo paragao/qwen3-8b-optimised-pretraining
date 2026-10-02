@@ -94,7 +94,9 @@ measured peak allocated         6.84 GiB
 activations + workspace         0.82 GiB   (13.6% on top of static)
 ```
 
-The analytic model was therefore **low by 13.6%**, and the gap is exactly the
+The analytic model was therefore **low by 13.5%** (0.8151 GiB against a precise
+static figure of 6.0249 GiB; the rounded 6.02 gives 13.6%), and the gap is
+exactly the
 term it does not model: activations and allocator workspace. For sizing work,
 treat the 18 B/param figure as a floor and add an activation margin. Peak
 reserved (7.26 GiB) sits 0.42 GiB above allocated, which is allocator
@@ -102,6 +104,31 @@ fragmentation, not model state.
 
 At 6.84 GiB the proxy uses **30.9% of the A10G's 22.1 GiB usable**, so the card
 had ample headroom — the scaling was conservative.
+
+### Superseded by the `wider` run
+
+The "+14% activation margin" advice above was a one-point rule of thumb, and it
+has since been **refuted** by the `wider` profile. Scaling the static figure by
+a flat percentage is the wrong shape, because the largest single activation
+(FP32 vocab logits) is constant in `num_layers` and `hidden_size`. For `wider`
+the flat rule predicted 11.98 GiB against a measured **11.76 GiB**, while a
+decomposed model predicted 11.66 GiB — and the two bands were committed
+disjoint beforehand, so the measurement discriminated between them.
+
+Use `python3 g5/predict.py --profile <name>` for sizing. Full scoring in
+`g5/results/wider-prediction.md`.
+
+| | `smoke` | `wider` |
+|---|---|---|
+| static @18 B/param | 6.02 GiB | 10.55 GiB |
+| measured peak allocated | 6.84 GiB | **11.76 GiB** |
+| measured peak reserved | 7.26 GiB | 12.25 GiB |
+| residual over static | 0.82 GiB (+13.5%) | 1.21 GiB (+11.4%) |
+| fragmentation (reserved − alloc) | 0.42 GiB | 0.49 GiB |
+
+The residual *percentage* falls as the model grows (13.6% -> 11.4%), which is
+the flat rule's error made visible: the constant logits term is a shrinking
+share of a growing static figure.
 
 ## Throughput: measured
 
@@ -137,6 +164,34 @@ wall clock is one-off setup — model build, tokenizer download, dataset index
 compilation (7.17 s on its own), CUDA warmup. At 50 iterations that overhead is
 38% of the run. Quote the steady-state median; the end-to-end figure is only a
 lower bound and is labelled as such in the output.
+
+### Confirmed again on `wider`
+
+The `wider` run of 2026-10-02 17:41 reproduces the same pattern and extends it
+to a second architecture:
+
+| | `smoke` | `wider` |
+|---|---|---|
+| median tok/s (steady state) | 24,757 | **14,357** |
+| end-to-end tok/s (lower bound) | 13,912 | 10,004 |
+| end-to-end pessimism | 1.78x | 1.44x |
+| median step time | 0.331 s | 0.571 s |
+| step-time stdev | 0.001 s (0.3%) | 0.001 s (0.2%) |
+| MODEL_TFLOP/s | 30.9 | **34.9** |
+| MFU of 125 TFLOP/s peak | 24.7% | **27.9%** |
+| FLOPs/step | 10.23 TFLOP | 19.94 TFLOP (1.950x) |
+| skipped / NaN | 0 / 0 | 0 / 0 |
+
+Two findings from the pair. **Efficiency rises with width**: 30.9 -> 34.9
+MODEL_TFLOP/s (+12.9%) going from hidden 1024 to 1536, which was predicted in
+advance as a direction (R4) and confirmed — larger GEMMs are not less
+efficient on this card. And **throughput is not a model-quality metric here**:
+`wider` does 1.950x the FLOPs per step for the same 8,192 tokens, so its 0.58x
+throughput is arithmetic, not a regression.
+
+`g5/throughput.py`'s regexes, originally verified only against a synthetic log,
+have now parsed two real Megatron-Bridge 26.04 logs and correctly identified
+the warmup iteration in both (2.207 s and 2.423 s).
 
 ### What this number does and does not mean
 

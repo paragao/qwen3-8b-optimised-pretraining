@@ -116,30 +116,50 @@ check that the estimate can be trusted.
 | `wider` | 6 | 1536 | 4608 | 12/3 | 1024 | 629.5 M | 10.55 GiB | 46.9% |
 | `deeper` | 12 | 1024 | 3072 | 8/2 | 2048 | 455.9 M | 7.64 GiB | 34.0% |
 
-The `Static` column is analytic and excludes activations. `smoke` was measured
-on 2026-10-02 at **6.84 GiB peak allocated / 7.26 GiB reserved** (30.9% of the
-card) against its 6.02 GiB estimate. `wider` and `deeper` are untested.
+The `Static` column is analytic and excludes activations. Two profiles are now
+measured, `deeper` is not:
 
-To budget the untested profiles, use `g5/predict.py` rather than scaling the
+| Profile | Static | Measured peak alloc | Measured reserved | % of 22.49 GiB total | Median tok/s | MODEL_TFLOP/s | MFU |
+|---|---|---|---|---|---|---|---|
+| `smoke` | 6.02 GiB | **6.84 GiB** | 7.26 GiB | 30.4% | **24,757** | 30.9 | 24.7% |
+| `wider` | 10.55 GiB | **11.76 GiB** | 12.25 GiB | 52.3% | **14,357** | 34.9 | 27.9% |
+| `deeper` | 7.64 GiB | not run (predicted 10.21-10.53) | — | 45-47% | predicted ~15,800-17,900 | — | — |
+
+Percentages are against the A10G's **22.49 GiB total** (`nvidia-smi` reports
+23028 MiB). `g5/results/validation-run.md` quotes 30.9% for `smoke` against a
+22.1 GiB *usable* figure instead; same measurement, different denominator.
+
+Both measured at 0 skipped and 0 NaN iterations over 50 steps, so the BF16 path
+is stable on `sm_86` at hidden 1024 and 1536. Note `wider` is **1.950x the
+FLOPs per step** of `smoke` but only **0.58x the throughput**, because tokens
+per step is fixed at 8,192 by `GBS 8 x seq 1024` — a wider model does strictly
+more work per token.
+
+To budget an unmeasured profile, use `g5/predict.py` rather than scaling the
 static figure by a flat percentage:
 
 ```bash
-python3 g5/predict.py --profile wider    # 11.66 GiB predicted peak
+python3 g5/predict.py --profile deeper   # predicted peak
 python3 g5/predict.py --self-check       # validate the models first
+python3 g5/predict.py --score            # grade wider against its committed prediction
 ```
 
 A flat "+14% over static" rule is the wrong *shape*, because the single largest
 activation — the FP32 vocab logits at `mbs x seq x 151936 x 4` — is **constant
 in `num_layers` and `hidden_size`** and so does not scale with static state at
-all. `predict.py` separates that term from the ones that do. For `wider` the
-two approaches differ by 0.32 GiB (11.66 vs 11.98 GiB), and
-`g5/results/wider-prediction.md` records disjoint thresholds so the next run
-discriminates between them.
+all. `predict.py` separates that term from the ones that do.
 
-Measured `smoke` throughput: **24,757 tok/s median per step** (0.331 s/step,
-30.9 MODEL_TFLOP/s ≈ 24.7% MFU). See `g5/results/validation-run.md`.
-`predict.py`'s FLOP model reproduces that step to 0.04% and predicts
-**~14,400 tok/s** for `wider` (1.950x the FLOPs per step).
+**This was tested, not asserted.** Before `wider` ran, the two approaches were
+committed with disjoint prediction bands: decomposed 11.66 GiB, flat rule 11.98
+GiB. The measurement came in at **11.76 GiB** — inside the decomposed band and
+outside the flat one, so the flat rule is **refuted** (it erred by 2.3x as
+much, and in the predicted direction). See `g5/results/wider-prediction.md`.
+
+`predict.py`'s FLOP model, calibrated on `smoke` alone and never refitted,
+predicted `wider`'s FLOPs per step to **0.04%** across a 1.75x parameter-count
+change. Its central throughput estimate of 14,382 tok/s landed 0.17% from the
+measured 14,357, though that last figure also required guessing achieved
+efficiency at 35.0 TFLOP/s against an actual 34.9.
 
 All three keep `head_dim` at 128 and the GQA ratio at 4:1, as in Qwen3-8B.
 

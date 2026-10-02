@@ -77,6 +77,26 @@ SMOKE_MEASURED = dict(
     model_tflop_s=30.9,
 )
 
+# ---------------------------------------------------------------------------
+# Measured `wider` run (2026-10-02 17:41), AFTER the predictions above were
+# committed in g5/results/wider-prediction.md. Kept separate from
+# SMOKE_MEASURED, which is the only data either model was calibrated on.
+#   g5/results/run-20261002-184158.log
+# ---------------------------------------------------------------------------
+WIDER_MEASURED = dict(
+    peak_allocated_gib=11.76,
+    peak_reserved_gib=12.25,
+    step_time_s=0.571,
+    tokens_per_step=8192,
+    tokens_per_s=14357,
+    model_tflop_s=34.9,
+    params_m=629.5,
+    skipped_iterations=0,
+    nan_iterations=0,
+    loss_first=12.2437,
+    loss_last=0.1902,
+)
+
 # train.py defaults: micro_batch_size=1, global_batch_size=8 (lines 204-205).
 # So a global step is 8 gradient-accumulation micro-steps, and peak activation
 # memory is that of a SINGLE micro-batch of size 1.
@@ -294,10 +314,113 @@ def report(param_count, target: str) -> None:
     print("=" * 74)
 
 
+def score(param_count) -> int:
+    """Grade the measured `wider` run against the thresholds committed before it.
+
+    Returns 0 if the run is valid (R6/R7 clean), regardless of which memory
+    model won -- a refuted prediction is a result, not an error.
+    """
+    cal = calibrate_memory(param_count)
+    arch = PROFILES["wider"]
+    mem = memory_model(param_count, arch, cal)
+    flops = flops_per_step(param_count, arch)
+    m = WIDER_MEASURED
+
+    gap = abs(mem["naive_peak"] - mem["predicted_peak"]) / GIB
+    tol = min(0.15, 0.45 * gap)
+    r1 = (mem["predicted_peak"] / GIB - tol, mem["predicted_peak"] / GIB + tol)
+    r2 = (mem["naive_peak"] / GIB - tol, mem["naive_peak"] / GIB + tol)
+    peak = m["peak_allocated_gib"]
+
+    print("=" * 74)
+    print("SCORED: 'wider' measurement vs thresholds committed BEFORE the run")
+    print("=" * 74)
+
+    print("\n  --- validity gates (these decide whether the run counts at all) ---")
+    r6_ok = abs(m["params_m"] - mem["params"] / 1e6) < 0.1
+    print(f"  R6 TOTAL params      : {m['params_m']} M vs expected "
+          f"{mem['params'] / 1e6:.1f} M -> {'VALID' if r6_ok else 'VOID (override dropped)'}")
+    r7_ok = m["skipped_iterations"] == 0 and m["nan_iterations"] == 0
+    print(f"  R7 skipped / NaN     : {m['skipped_iterations']} / {m['nan_iterations']}"
+          f" -> {'PASS, no BF16 instability' if r7_ok else 'FAIL'}")
+    if not r6_ok:
+        print("\n  Run is VOID. Nothing below is a wider measurement.")
+        return 1
+
+    print("\n  --- memory: two competing models, disjoint bands ---")
+    in_r1 = r1[0] <= peak <= r1[1]
+    in_r2 = r2[0] <= peak <= r2[1]
+    print(f"  measured peak        : {peak:.2f} GiB")
+    print(f"  R1 decomposed model  : predicted {mem['predicted_peak'] / GIB:.2f}, "
+          f"band [{r1[0]:.2f}, {r1[1]:.2f}] -> {'HIT' if in_r1 else 'miss'}")
+    print(f"  R2 flat +14% rule    : predicted {mem['naive_peak'] / GIB:.2f}, "
+          f"band [{r2[0]:.2f}, {r2[1]:.2f}] -> {'HIT' if in_r2 else 'miss'}")
+    for label, pred in (("decomposed", mem["predicted_peak"] / GIB),
+                        ("flat +14%", mem["naive_peak"] / GIB)):
+        err = peak - pred
+        print(f"    {label:<12} error     : {err:+.2f} GiB ({100 * err / peak:+.2f}%)")
+    if in_r1 and not in_r2:
+        print("  VERDICT: decomposed model CONFIRMED; flat +14% rule REFUTED.")
+    elif in_r2 and not in_r1:
+        print("  VERDICT: flat +14% rule CONFIRMED; decomposition REFUTED.")
+    else:
+        print("  VERDICT: R2b -- outside both bands; an unmodelled term dominates.")
+
+    print("\n  --- FLOP model: calibrated on smoke, never refitted ---")
+    implied = m["model_tflop_s"] * 1e12 * m["step_time_s"]
+    err = 100 * (flops["total"] - implied) / implied
+    print(f"  predicted FLOPs/step : {flops['total'] / 1e12:.2f} TFLOP")
+    print(f"  implied by measurement: {implied / 1e12:.2f} TFLOP "
+          f"({m['model_tflop_s']} TFLOP/s x {m['step_time_s']} s)")
+    print(f"  error                : {err:+.2f}%  -> "
+          f"{'CONFIRMED on a second architecture' if abs(err) < 1 else 'REFUTED'}")
+
+    print("\n  --- throughput ---")
+    t_floor = flops["tokens"] / (flops["total"] / (SMOKE_MEASURED["model_tflop_s"] * 1e12))
+    t_opt = flops["tokens"] / (flops["total"] / (38.0 * 1e12))
+    lo, hi = t_floor * 0.95, t_opt * 1.05
+    in_r3 = lo <= m["tokens_per_s"] <= hi
+    central = flops["tokens"] / (flops["total"] / (35.0 * 1e12))
+    print(f"  measured median      : {m['tokens_per_s']:,} tok/s @ {m['step_time_s']} s/step")
+    print(f"  R3 band              : [{lo:,.0f}, {hi:,.0f}] -> {'HIT' if in_r3 else 'MISS'}")
+    print(f"  central prediction   : {central:,.0f} tok/s @ 35.0 TFLOP/s assumed")
+    print(f"    error vs central   : {m['tokens_per_s'] - central:+,.0f} tok/s "
+          f"({100 * (m['tokens_per_s'] - central) / m['tokens_per_s']:+.2f}%)")
+    r4_ok = m["model_tflop_s"] >= SMOKE_MEASURED["model_tflop_s"]
+    print(f"  R4 efficiency floor  : {m['model_tflop_s']} vs smoke "
+          f"{SMOKE_MEASURED['model_tflop_s']} TFLOP/s -> "
+          f"{'PASS, bigger GEMMs no less efficient' if r4_ok else 'REFUTED'}")
+    print(f"    efficiency gain    : {100 * (m['model_tflop_s'] / SMOKE_MEASURED['model_tflop_s'] - 1):+.1f}%")
+    print(f"    MFU               : {100 * m['model_tflop_s'] / A10G_BF16_PEAK_TFLOPS:.1f}% "
+          f"(smoke: {100 * SMOKE_MEASURED['model_tflop_s'] / A10G_BF16_PEAK_TFLOPS:.1f}%)")
+    print(f"  vs smoke throughput  : {m['tokens_per_s'] / SMOKE_MEASURED['tokens_per_s']:.4f}x")
+
+    print("\n  --- two-point separation of the residual terms ---")
+    print("  With smoke AND wider, the constant term and the per-layer term can be")
+    print("  solved exactly. NOTE: 2 equations, 2 unknowns -- zero degrees of")
+    print("  freedom, so this is a REPARAMETRISATION, not a validated fit.")
+    s, w = PROFILES["smoke"], PROFILES["wider"]
+    us, uw = activation_units(s), activation_units(w)
+    rs = SMOKE_MEASURED["peak_allocated_gib"] * GIB - param_count(s, VOCAB_SIZE)["total"] * 18
+    rw = m["peak_allocated_gib"] * GIB - param_count(w, VOCAB_SIZE)["total"] * 18
+    k = (rw - rs) / (uw - us)
+    const = rs - k * us
+    print(f"  smoke residual       : {rs / GIB:.4f} GiB over {us:,} units")
+    print(f"  wider residual       : {rw / GIB:.4f} GiB over {uw:,} units")
+    print(f"  solved per-unit      : {k:.2f} B per (layer x seq x hidden x batch)")
+    print(f"  solved constant      : {const / GIB:.4f} GiB")
+    print(f"  FP32 logits theory   : {logits_bytes(w) / GIB:.4f} GiB "
+          f"({100 * (const - logits_bytes(w)) / logits_bytes(w):+.1f}% vs solved)")
+    print("=" * 74)
+    return 0 if (r6_ok and r7_ok) else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--self-check", action="store_true",
                     help="verify the lifted formula and calibrated models")
+    ap.add_argument("--score", action="store_true",
+                    help="grade the measured wider run against committed thresholds")
     ap.add_argument("--profile", default="wider", choices=sorted(PROFILES),
                     help="profile to predict (default: wider)")
     args = ap.parse_args()
@@ -305,6 +428,8 @@ def main() -> int:
     param_count = load_param_count()
     if args.self_check:
         return self_check(param_count)
+    if args.score:
+        return score(param_count)
     report(param_count, args.profile)
     return 0
 

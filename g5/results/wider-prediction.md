@@ -1,13 +1,19 @@
-# `wider` profile — prediction recorded BEFORE the run
+# `wider` profile — prediction, and the result that scored it
 
-**Status: PREDICTION ONLY. Nothing here is measured.**
-Written 2026-10-02, before the `wider` profile was ever executed, so the run is
-a test of these numbers rather than a fit to them. Regenerate with:
+**The predictions in this file were committed at 2026-10-02 ~17:30 in
+`6eb3a41`, before the run executed at 17:41.** The outcome is appended at the
+bottom and nothing above it was edited afterwards, so the git history is the
+evidence that this was a test rather than a fit. Reproduce with:
 
 ```bash
-python3 g5/predict.py --profile wider
-python3 g5/predict.py --self-check
+python3 g5/predict.py --profile wider   # the prediction
+python3 g5/predict.py --self-check      # validate the models
+python3 g5/predict.py --score           # grade the measurement
 ```
+
+**Outcome in one line: the decomposed memory model was CONFIRMED (11.66
+predicted, 11.76 measured) and the README's flat "+14% over static" rule was
+REFUTED. Throughput landed 0.17% from the central prediction.**
 
 ## Why this file exists
 
@@ -115,3 +121,108 @@ It was mutation-tested to confirm it is not vacuous: changing the SwiGLU factor
 from 3 to 2, and zeroing the untied `lm_head`, were both **KILLED**. `train.py`
 was verified byte-identical (sha256 `1bf6dd75...`) after the mutants ran
 against copies in `/tmp`.
+
+---
+
+# OUTCOME — measured 2026-10-02 17:41
+
+Log: `g5/results/run-20261002-184158.log` (46,433 B, retrieved locally).
+Scored by `python3 g5/predict.py --score`.
+
+## Validity gates first
+
+| Gate | Measured | Verdict |
+|---|---|---|
+| **R6** TOTAL params | **629.5 M** (expected 629.5 M) | **VALID** — the env override reached the model |
+| **R7** skipped / NaN iterations | **0 / 0** over 50 steps | PASS — no BF16 instability at hidden 1536 on `sm_86` |
+
+R6 is the one that mattered. The `finish-run.sh` passthrough defect was fixed
+in the same commit as this file; the log confirms all six architecture values
+arrived (`num_layers: 6`, `hidden_size: 1536`, `ffn_hidden_size: 4608`,
+`num_attention_heads: 12`, `num_query_groups: 3`, `seq_length: 1024`). Had the
+fix not landed, this would have been a second `smoke` run reporting 24,757
+tok/s under the wrong label.
+
+## Memory: the decomposition wins, the flat rule is refuted
+
+| Model | Predicted | Measured | Error | Band | Verdict |
+|---|---|---|---|---|---|
+| **decomposed** (this file) | 11.66 GiB | **11.76 GiB** | **+0.10 GiB (+0.83%)** | [11.52, 11.81] | **HIT — confirmed** |
+| flat "+14% over static" | 11.98 GiB | 11.76 GiB | −0.22 GiB (−1.88%) | [11.84, 12.12] | miss — **refuted** |
+
+The disjoint bands did their job: the measurement falls inside one and outside
+the other, so the run discriminated rather than accommodating both. The flat
+rule erred by 2.3x as much, and in the direction the decomposition predicts —
+it over-counts because it scales the FP32 logits term with static state, when
+that term is constant in `num_layers` and `hidden_size`.
+
+Peak reserved was 12.25 GiB, so allocator fragmentation is 0.49 GiB (smoke:
+0.42 GiB). At 11.76 GiB the profile used 52.3% of the 22.49 GiB card.
+
+## Throughput: the FLOP model holds on a second architecture
+
+| | Predicted | Measured |
+|---|---|---|
+| FLOPs/step | **19.94 TFLOP** | 19.93 TFLOP (34.9 TFLOP/s x 0.571 s) — **+0.04%** |
+| median tok/s | 14,382 @ 35.0 TFLOP/s assumed | **14,357** — **−0.17%** |
+| s/step | 0.570 | 0.571 (stdev 0.001, 0.2%) |
+| MODEL_TFLOP/s | >= 30.9 (R4 floor) | **34.9** — PASS, **+12.9%** over smoke |
+
+The FLOP model was calibrated on `smoke` and **never refitted**, then predicted
+`wider`'s FLOPs per step to **0.04%**. That is the result worth keeping: the
+model generalised across a 1.75x change in parameter count and a 1.5x change in
+hidden size, which a single-point calibration had no obligation to do.
+
+The central 14,382 tok/s figure landing within 0.17% is **partly luck** and
+should not be read as the model being that precise. It required a judgement
+call that achieved efficiency would be 35.0 TFLOP/s, and the measurement came
+in at 34.9. The defensible claim is the FLOP count (+0.04%) plus the R4
+direction call (bigger GEMMs are not less efficient, confirmed at +12.9%); the
+exact tok/s followed from an efficiency guess inside a [30.9, 38.0] band.
+
+MFU rose from 24.7% to **27.9%** of A10G BF16 dense peak. Throughput is
+**0.5799x** smoke, against 1.950x the FLOPs per step.
+
+## What two points now permit, and what they do not
+
+With `smoke` and `wider` the residual splits into its constant and per-layer
+parts exactly:
+
+| | |
+|---|---|
+| smoke residual | 0.8151 GiB over 4,194,304 units |
+| wider residual | 1.2065 GiB over 9,437,184 units |
+| solved per-unit | **80.17 B** per (layer x seq x hidden x batch) |
+| solved constant | **0.5019 GiB** |
+| pure FP32 logits theory | 0.5796 GiB (solved value is **13.4% lower**) |
+
+**This is a reparametrisation, not a validated fit.** Two equations in two
+unknowns have zero degrees of freedom, so it cannot fail and must not be
+reported as confirmation. It does raise a real question: the constant term
+comes out at 0.87 of a full FP32 logits copy, not 1.00, which would be
+consistent with partial fusion or with peak not coinciding with full logits
+materialisation — or with the single fitted per-unit constant absorbing
+structure that does not actually scale as `layers x hidden`.
+
+Testing it needs a **third** point, and `deeper` is the natural one because it
+moves `seq_length` to 2048 while dropping back to hidden 1024. The two
+parametrisations disagree there by 0.31 GiB:
+
+| Calibration | `deeper` predicted peak |
+|---|---|
+| smoke only (60.29 B/unit, full FP32 logits) | **10.21 GiB** |
+| smoke + wider (80.17 B/unit, 0.87x logits) | **10.53 GiB** |
+
+Same discriminating magnitude as the question this run just settled.
+
+## The loss curve still does not mean convergence
+
+Loss moved 12.2437 -> 0.1902, and the log still reports `mock: True` with
+`MockGPTDataset splits with sizes=(400, 0, 0)`. First-iteration loss sits just
+above `ln(151936) = 11.9312`, which is uniform guessing over the full vocab and
+the correct starting point for a fresh init; the collapse is degenerate fitting
+of 400 synthetic samples. `DATA_PATH` was forwarded by the fixed script but
+left empty. Real convergence needs it pointed at c4.
+
+What the trace does prove: gradients flow, Adam updates, the LR schedule
+applies, and 0 skipped / 0 NaN across 50 steps at hidden 1536.
