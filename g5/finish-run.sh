@@ -131,14 +131,62 @@ ssh "${SSH_OPTS[@]}" "${OS_USER}@${INSTANCE_ID}" \
 
 say "Copying the fixed scripts to the instance"
 # The fix branch is local-only (never pushed), so the instance cannot git fetch
-# it. Copy the three files directly instead.
-scp "${SSH_OPTS[@]}" -q g5/train.py g5/run.sh g5/throughput.py \
+# it. Copy the changed files directly instead.
+# NOTE: g5/prepare_c4.py lifts write_idx_file out of
+# preprocessing/preprocess.py, which the instance already has from its clone of
+# origin and which is NOT modified here -- so it does not need copying.
+PAYLOAD=(g5/train.py g5/run.sh g5/throughput.py g5/prepare_c4.py g5/prepare-c4.sh)
+scp "${SSH_OPTS[@]}" -q "${PAYLOAD[@]}" \
   "${OS_USER}@${INSTANCE_ID}:${REMOTE_REPO}/g5/"
 ssh "${SSH_OPTS[@]}" "${OS_USER}@${INSTANCE_ID}" \
-  "chmod +x ${REMOTE_REPO}/g5/run.sh; cd ${REMOTE_REPO} && md5sum g5/train.py g5/run.sh g5/throughput.py | sed 's/^/    /'"
+  "chmod +x ${REMOTE_REPO}/g5/run.sh ${REMOTE_REPO}/g5/prepare-c4.sh; \
+   cd ${REMOTE_REPO} && md5sum ${PAYLOAD[*]} | sed 's/^/    /'"
 echo "    local checksums for comparison:"
-md5sum g5/train.py g5/run.sh g5/throughput.py 2>/dev/null | sed 's/^/    /' || \
-  md5 -r g5/train.py g5/run.sh g5/throughput.py | sed 's/^/    /'
+md5sum "${PAYLOAD[@]}" 2>/dev/null | sed 's/^/    /' || \
+  md5 -r "${PAYLOAD[@]}" | sed 's/^/    /'
+
+if [[ "${PREPARE_C4:-0}" == "1" ]]; then
+  say "Building the c4 dataset on the instance (PREPARE_C4=1)"
+  echo "    budget: ${NUM_TOKENS:-50000000} tokens; this is CPU-only and does not touch the GPU"
+  ssh "${SSH_OPTS[@]}" "${OS_USER}@${INSTANCE_ID}" \
+    "cd ${REMOTE_REPO} && \
+     NUM_TOKENS='${NUM_TOKENS:-50000000}' \
+     DOC_LENGTH='${DOC_LENGTH:-4096}' \
+     HF_TOKEN='${HF_TOKEN:-}' \
+     ./g5/prepare-c4.sh"
+  # If the caller did not name a DATA_PATH, default to what prepare-c4.sh built.
+  # Without this the training run would silently fall back to the MOCK dataset
+  # after paying for the whole download, which is the trap this guards.
+  DATA_PATH="${DATA_PATH:-/workspace/run/datasets/c4_qwen3}"
+  echo "    DATA_PATH for the run: ${DATA_PATH}"
+fi
+
+if [[ -n "${DATA_PATH:-}" ]]; then
+  say "Verifying the dataset exists before spending a training run on it"
+  # DATA_PATH is an IN-CONTAINER path, because run.sh passes it straight
+  # through to the container. Translate the /workspace/run mount prefix back to
+  # the host path to test for the file over ssh.
+  RUN_BASE_HOST="${RUN_BASE_HOST:-/home/ubuntu/qwen3-g5/run}"
+  HOST_DATA="${DATA_PATH/#\/workspace\/run/${RUN_BASE_HOST}}"
+  echo "    container path : ${DATA_PATH}"
+  echo "    host path      : ${HOST_DATA}"
+  # train.py checks this too, but failing here costs seconds instead of a
+  # container start, and says what to do about it.
+  if ! ssh "${SSH_OPTS[@]}" "${OS_USER}@${INSTANCE_ID}" \
+      "test -f '${HOST_DATA}.idx' && test -f '${HOST_DATA}.bin'"; then
+    echo "FATAL: DATA_PATH=${DATA_PATH} but ${HOST_DATA}.{bin,idx} is not on" >&2
+    echo "       the instance. Build it first with:" >&2
+    echo "         PREPARE_C4=1 ./g5/finish-run.sh" >&2
+    exit 1
+  fi
+  # Advisory only: the test -f gate above is the hard requirement. This extra
+  # structural check needs numpy on the HOST, which is not guaranteed, so it
+  # must not abort the run under `set -o pipefail`.
+  ssh "${SSH_OPTS[@]}" "${OS_USER}@${INSTANCE_ID}" \
+    "cd ${REMOTE_REPO} && python3 g5/prepare_c4.py --verify-only '${HOST_DATA}' 2>&1" \
+    | sed 's/^/    /' || echo "    (structural check skipped: no numpy on the host)"
+  echo "    this run uses REAL data, not the mock dataset"
+fi
 
 say "Running the validation (this is the long step)"
 # Record the newest existing log FIRST. If this run dies before writing its own

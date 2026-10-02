@@ -21,9 +21,17 @@ Running on the **same entrypoint** as `h200/train.py` and `b300/train.py`
 - Qwen3 model construction: GQA, RoPE, RMSNorm, SwiGLU
 - the real Qwen3 tokenizer and the full 151,936-entry vocab
 - the dataset path — Megatron's mock dataset by default, or real
-  Megatron-indexed `.bin`/`.idx` from `preprocessing/preprocess.py`
-- a real forward -> backward -> Adam step loop in BF16, with the loss moving
+  Megatron-indexed `.bin`/`.idx` from `g5/prepare_c4.py`
+- a real forward -> backward -> Adam step loop in BF16, with 0 skipped and 0
+  NaN iterations
 - measured peak memory against the A10G envelope
+
+> **The loss curve on mock data is not a learning signal.** Both measured runs
+> fell from ~12.2 to ~0.2 in 50 steps, which is degenerate fitting of 400
+> synthetic samples, not convergence. First-iteration loss sitting just above
+> `ln(151936) = 11.9312` is the correct signature of a fresh random init, and
+> is as much as the mock path can tell you. For an interpretable curve, use
+> real data — see "Using real data" below.
 
 ## Differences from the cluster path, and why
 
@@ -192,17 +200,54 @@ the largest single activation in the model: 622 MB at `seq=1024`, 1.24 GB at
 
 ## Using real data instead of the mock dataset
 
-The mock dataset keeps this validation self-contained. To exercise the real
-tokenized path:
+The mock dataset keeps this validation self-contained, but its loss curve is
+**not interpretable** — see the warning under Profiles. For a real loss curve:
 
 ```bash
-export HF_TOKEN=<your huggingface token>
-python preprocessing/preprocess.py \
-  --output-prefix ~/qwen3-g5/run/datasets/c4_qwen3_8b \
-  --num-tokens 100000000 --workers 32
+# 1. Build a bounded c4 dataset on the instance (CPU only, no GPU needed)
+./g5/prepare-c4.sh                        # 50M tokens, the default budget
+NUM_TOKENS=200000000 ./g5/prepare-c4.sh   # bigger budget
 
-DATA_PATH=~/qwen3-g5/run/datasets/c4_qwen3_8b ./g5/run.sh
+# 2. Train against it. DATA_PATH is the IN-CONTAINER path.
+DATA_PATH=/workspace/run/datasets/c4_qwen3 TRAIN_ITERS=1000 ./g5/run.sh
+
+# Or both in one step, driven from a laptop:
+PREPARE_C4=1 TRAIN_ITERS=1000 ./g5/finish-run.sh
 ```
+
+**`DATA_PATH` is a path inside the container, not on the host.** `g5/run.sh`
+mounts `RUN_BASE` at `/workspace/run` and passes `DATA_PATH` straight through,
+so a host path like `~/qwen3-g5/run/datasets/...` does not exist in the
+container and `train.py`'s `.idx` check will reject it. Use the
+`/workspace/run/...` form. `g5/finish-run.sh` translates between the two for
+its pre-flight check and prints both.
 
 `train.py` fails fast with an explicit message if `DATA_PATH` is set but the
 `.idx` file is missing, rather than silently falling back to mock data.
+
+### Why not `preprocessing/preprocess.py`
+
+That script targets a p5en node with FSx, 192 CPUs and a 1B-token budget, and
+is unusable on a single g5.8xlarge:
+
+| | `preprocessing/preprocess.py` | `g5/prepare_c4.py` |
+|---|---|---|
+| download | `split="train[:N]"` (line 127) — a slice still resolves and downloads **every** `en` shard before slicing | `streaming=True`, stops at the token budget |
+| `HF_TOKEN` | hard `sys.exit(1)` without it (line 55) | optional; `allenai/c4` is public |
+| doc length | hardcoded 4096 (line 144) | `--doc-length`, default 4096 |
+| verification | none | `--self-test` and `--verify-only` |
+
+The streaming approach is what this repo's own
+`docs/data-loading-explained.md` (line 41) already prescribes;
+`preprocess.py` is what diverged from it.
+
+Verify the format writer offline, with numpy alone and no network:
+
+```bash
+python3 g5/prepare_c4.py --self-test          # round-trip + corruption rejection
+python3 g5/prepare_c4.py --verify-only PREFIX # check an existing build
+```
+
+`prepare_c4.py` reuses `write_idx_file` lifted out of
+`preprocessing/preprocess.py` rather than copying it, so the on-disk Megatron
+format cannot drift between the two paths.

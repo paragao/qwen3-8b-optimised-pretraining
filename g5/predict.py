@@ -155,6 +155,51 @@ def calibrate_memory(param_count) -> dict:
     )
 
 
+def calibrate_two_point(param_count) -> dict:
+    """Solve the residual's constant and per-unit terms from smoke AND wider.
+
+    Two equations, two unknowns -- an EXACT solve with zero degrees of freedom.
+    This is a reparametrisation, not a validated fit: it cannot fail, so it
+    must not be reported as confirmation. Its value is that it disagrees with
+    the smoke-only calibration about `deeper`, which makes `deeper` a test.
+
+    The two terms are separable because they scale differently in the
+    architecture: the logits term is constant in num_layers and hidden_size
+    while the activation term is linear in their product.
+    """
+    s, w = PROFILES["smoke"], PROFILES["wider"]
+    us, uw = activation_units(s), activation_units(w)
+    rs = (SMOKE_MEASURED["peak_allocated_gib"] * GIB
+          - param_count(s, VOCAB_SIZE)["total"] * 18)
+    rw = (WIDER_MEASURED["peak_allocated_gib"] * GIB
+          - param_count(w, VOCAB_SIZE)["total"] * 18)
+    if uw == us:
+        raise SystemExit("FATAL: smoke and wider have equal activation units; "
+                         "the two terms are not separable from this pair.")
+    k = (rw - rs) / (uw - us)
+    const = rs - k * us
+    # Both reference runs use seq_length 1024, so `const` is the logits term at
+    # that sequence length. Express it as a fraction of a full FP32 copy so it
+    # can be re-scaled for a profile with a different seq_length.
+    return dict(
+        bytes_per_activation_unit=k,
+        logits_fraction=const / logits_bytes(s),
+        constant_at_seq1024=const,
+    )
+
+
+def memory_model_two_point(param_count, arch: dict, cal2: dict) -> dict:
+    """Predict peak memory using the two-point calibration."""
+    counts = param_count(arch, VOCAB_SIZE)
+    static = counts["total"] * 18
+    logits = cal2["logits_fraction"] * logits_bytes(arch)
+    other = cal2["bytes_per_activation_unit"] * activation_units(arch)
+    return dict(
+        params=counts["total"], static=static, logits=logits, other=other,
+        predicted_peak=static + logits + other,
+    )
+
+
 def flops_per_step(param_count, arch: dict) -> dict:
     """Model FLOPs for one optimizer step.
 
@@ -207,6 +252,16 @@ def self_check(param_count) -> int:
     rt = memory_model(param_count, PROFILES["smoke"], cal)
     check("smoke predicted peak", rt["predicted_peak"] / GIB,
           SMOKE_MEASURED["peak_allocated_gib"], 0.01, " GiB")
+
+    print("\n--- two-point solve round-trips BOTH measured points ---")
+    # By construction it must hit both exactly. If it does not, the solve is
+    # wrong. This is the only check the exact solve can actually fail.
+    cal2 = calibrate_two_point(param_count)
+    for name, measured in (("smoke", SMOKE_MEASURED), ("wider", WIDER_MEASURED)):
+        got = memory_model_two_point(param_count, PROFILES[name], cal2)
+        check(f"two-point {name} peak", got["predicted_peak"] / GIB,
+              measured["peak_allocated_gib"], 0.01, " GiB")
+    check("two-point logits fraction", cal2["logits_fraction"], 0.8660, 0.0005)
 
     print("\n--- geometry constraints Megatron enforces ---")
     for name, arch in PROFILES.items():
@@ -271,6 +326,27 @@ def report(param_count, target: str) -> None:
           f"({100 * mem['predicted_peak'] / A10G_TOTAL_BYTES:.1f}% of 22.49 GiB card)")
     print(f"  (README +14% rule     : {mem['naive_peak'] / GIB:>7.2f} GiB  "
           f"<-- competing prediction, see below)")
+
+    # Once smoke AND wider are measured, a second calibration exists and
+    # disagrees. For any profile other than those two, that disagreement is a
+    # live test -- so show it.
+    cal2 = calibrate_two_point(param_count)
+    m2 = memory_model_two_point(param_count, arch, cal2)
+    if target not in ("smoke", "wider"):
+        print()
+        print("  --- competing calibration: two-point (smoke + wider) ---")
+        print(f"  per-unit constant     : {cal2['bytes_per_activation_unit']:.2f} B "
+              f"(vs {cal['bytes_per_activation_unit']:.2f} B from smoke alone)")
+        print(f"  logits fraction       : {cal2['logits_fraction']:.4f} of a full FP32 copy "
+              f"(vs 1.0000 assumed)")
+        print(f"  static @18 B/param    : {m2['static'] / GIB:>7.2f} GiB")
+        print(f"  logits term           : {m2['logits'] / GIB:>7.2f} GiB")
+        print(f"  other activations     : {m2['other'] / GIB:>7.2f} GiB")
+        print(f"  PREDICTED PEAK (2pt)  : {m2['predicted_peak'] / GIB:>7.2f} GiB  "
+              f"({100 * m2['predicted_peak'] / A10G_TOTAL_BYTES:.1f}% of card)")
+        print(f"  DISCRIMINATING GAP    : "
+              f"{abs(m2['predicted_peak'] - mem['predicted_peak']) / GIB:>7.2f} GiB")
+
     print()
     print("  --- predicted throughput ---")
     print(f"  tokens/step           : {flops['tokens']:,} "
@@ -283,21 +359,34 @@ def report(param_count, target: str) -> None:
               f"{step:.3f} s/step  {flops['tokens'] / step:>7,.0f} tok/s")
     print()
     print("  --- REFUTATION THRESHOLDS (recorded before the run) ---")
-    # The two memory models differ by only (naive - predicted) GiB, so the
-    # tolerance must be strictly under half that gap or the bands overlap and
-    # the run cannot discriminate between them. That would defeat the point.
-    gap = abs(mem["naive_peak"] - mem["predicted_peak"]) / GIB
+    # Pick the LIVE competing hypothesis. For smoke/wider that was the flat
+    # "+14% of static" rule. Once wider refuted it, the open question became
+    # which CALIBRATION of the decomposed model holds -- smoke-only or the
+    # two-point solve. Testing an already-refuted rule would waste the run.
+    if target not in ("smoke", "wider"):
+        competitor_name = "two-point calibration (smoke + wider)"
+        competitor = m2["predicted_peak"]
+        print(f"  NOTE: the flat +14% rule predicts {mem['naive_peak'] / GIB:.2f} GiB here, but it was")
+        print(f"        already REFUTED by the wider run; it is not the hypothesis under test.")
+    else:
+        competitor_name = "flat +14% of static rule"
+        competitor = mem["naive_peak"]
+    # The tolerance must be strictly under half the gap or the bands overlap
+    # and the run cannot discriminate between them. That would defeat the point.
+    gap = abs(competitor - mem["predicted_peak"]) / GIB
     tol = min(0.15, 0.45 * gap)
     lo, hi = mem["predicted_peak"] / GIB - tol, mem["predicted_peak"] / GIB + tol
-    nlo, nhi = mem["naive_peak"] / GIB - tol, mem["naive_peak"] / GIB + tol
+    nlo, nhi = competitor / GIB - tol, competitor / GIB + tol
     print(f"  competing predictions are {gap:.2f} GiB apart; "
           f"tolerance +/-{tol:.2f} GiB keeps the bands disjoint")
     print(f"  R1 peak allocated inside [{lo:.2f}, {hi:.2f}] GiB")
-    print(f"     -> CONFIRMS the decomposed model (logits constant in layers).")
+    print(f"     -> CONFIRMS the smoke-only calibration "
+          f"({mem['predicted_peak'] / GIB:.2f} GiB: full FP32 logits, 60.29 B/unit).")
     print(f"  R2 peak allocated inside [{nlo:.2f}, {nhi:.2f}] GiB")
-    print(f"     -> REFUTES the decomposition; the flat +14% rule wins.")
+    print(f"     -> CONFIRMS the {competitor_name} ({competitor / GIB:.2f} GiB).")
     print(f"  R2b peak outside BOTH bands")
-    print(f"     -> both models wrong; an unmodelled term dominates.")
+    print(f"     -> both wrong; an unmodelled term dominates.")
+
 
     t_floor = flops["tokens"] / (flops["total"] / (floor_tflops * 1e12))
     t_opt = flops["tokens"] / (flops["total"] / (38.0 * 1e12))
