@@ -124,50 +124,61 @@ check that the estimate can be trusted.
 | `wider` | 6 | 1536 | 4608 | 12/3 | 1024 | 629.5 M | 10.55 GiB | 46.9% |
 | `deeper` | 12 | 1024 | 3072 | 8/2 | 2048 | 455.9 M | 7.64 GiB | 34.0% |
 
-The `Static` column is analytic and excludes activations. Two profiles are now
-measured, `deeper` is not:
+The `Static` column is analytic and excludes activations. All three profiles
+are now measured:
 
 | Profile | Static | Measured peak alloc | Measured reserved | % of 22.49 GiB total | Median tok/s | MODEL_TFLOP/s | MFU |
 |---|---|---|---|---|---|---|---|
 | `smoke` | 6.02 GiB | **6.84 GiB** | 7.26 GiB | 30.4% | **24,757** | 30.9 | 24.7% |
 | `wider` | 10.55 GiB | **11.76 GiB** | 12.25 GiB | 52.3% | **14,357** | 34.9 | 27.9% |
-| `deeper` | 7.64 GiB | not run (predicted 10.21-10.53) | — | 45-47% | predicted ~15,800-17,900 | — | — |
+| `deeper` | 7.64 GiB | **9.66 GiB** | 10.03 GiB | 43.0% | **18,793** | **36.7** | **29.4%** |
 
 Percentages are against the A10G's **22.49 GiB total** (`nvidia-smi` reports
-23028 MiB). `g5/results/validation-run.md` quotes 30.9% for `smoke` against a
-22.1 GiB *usable* figure instead; same measurement, different denominator.
+23028 MiB). All three ran 0 skipped and 0 NaN iterations, so the BF16 path is
+stable on `sm_86` across 4-12 layers, hidden 1024-1536 and seq 1024-2048.
 
-Both measured at 0 skipped and 0 NaN iterations over 50 steps, so the BF16 path
-is stable on `sm_86` at hidden 1024 and 1536. Note `wider` is **1.950x the
-FLOPs per step** of `smoke` but only **0.58x the throughput**, because tokens
-per step is fixed at 8,192 by `GBS 8 x seq 1024` — a wider model does strictly
-more work per token.
+Two results worth reading off that table:
 
-To budget an unmeasured profile, use `g5/predict.py` rather than scaling the
-static figure by a flat percentage:
+**Sequence length buys more efficiency than width.** `deeper` is the *most*
+efficient of the three (36.7 MODEL_TFLOP/s, 29.4% MFU) at the *narrowest*
+width, having doubled seq instead. Doubling seq beat a 50% hidden increase.
+
+**Parameter count is not a proxy for step cost.** `deeper` has fewer
+parameters than `wider` (455.9 M vs 629.5 M) but does 1.605x the FLOPs per
+step, because seq 2048 doubles tokens/step and quadruples the attention term.
+
+### Sizing an untested profile: measure it
+
+`g5/predict.py --profile <name>` predicts memory, but **its memory model is
+refuted** and its prediction should be treated as a rough bound, not a number:
 
 ```bash
-python3 g5/predict.py --profile deeper   # predicted peak
-python3 g5/predict.py --self-check       # validate the models first
-python3 g5/predict.py --score            # grade wider against its committed prediction
+python3 g5/predict.py --form-test   # shows why; exits 1 by design
 ```
 
-A flat "+14% over static" rule is the wrong *shape*, because the single largest
-activation — the FP32 vocab logits at `mbs x seq x 151936 x 4` — is **constant
-in `num_layers` and `hidden_size`** and so does not scale with static state at
-all. `predict.py` separates that term from the ones that do.
+The flat "+14% over static" heuristic is definitely wrong — `wider` refuted it.
+But the decomposed replacement is *also* wrong: it predicted `deeper` at
+10.21-10.52 GiB against a measured 9.66, outside both bands, and no model of
+that form fits all three points (one leave-one-out fit needs a *negative*
+bytes-per-activation-unit). The root cause is that none of the three profiles
+is a single-variable change from another, so a model fitted to two of them has
+no basis for extrapolation.
 
-**This was tested, not asserted.** Before `wider` ran, the two approaches were
-committed with disjoint prediction bands: decomposed 11.66 GiB, flat rule 11.98
-GiB. The measurement came in at **11.76 GiB** — inside the decomposed band and
-outside the flat one, so the flat rule is **refuted** (it erred by 2.3x as
-much, and in the predicted direction). See `g5/results/wider-prediction.md`.
+Empirically, across the three measured shapes, peak allocated ran **11-26%
+above** the 18 B/param static figure. Treat 18 B/param as a floor, budget
+generously, and measure a new shape rather than predicting it. A `seq` sweep at
+fixed layers and hidden, plus a `layers` sweep at fixed seq and hidden, would
+settle the form — about 12 runs of under a minute each.
 
-`predict.py`'s FLOP model, calibrated on `smoke` alone and never refitted,
-predicted `wider`'s FLOPs per step to **0.04%** across a 1.75x parameter-count
-change. Its central throughput estimate of 14,382 tok/s landed 0.17% from the
-measured 14,357, though that last figure also required guessing achieved
-efficiency at 35.0 TFLOP/s against an actual 34.9.
+**The throughput model, by contrast, is validated.** Calibrated on `smoke`
+alone and never refitted, it predicts FLOPs per step to within **0.04%** on all
+three profiles, across changes in layers, hidden size and sequence length:
+
+| | predicted | implied by measurement | error |
+|---|---|---|---|
+| `smoke` | 10.22 TFLOP | 10.23 | −0.04% |
+| `wider` | 19.94 TFLOP | 19.93 | +0.04% |
+| `deeper` | 31.99 TFLOP | 32.00 | −0.03% |
 
 All three keep `head_dim` at 128 and the GQA ratio at 4:1, as in Qwen3-8B.
 

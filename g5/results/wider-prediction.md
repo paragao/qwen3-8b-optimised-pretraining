@@ -11,9 +11,29 @@ python3 g5/predict.py --self-check      # validate the models
 python3 g5/predict.py --score           # grade the measurement
 ```
 
-**Outcome in one line: the decomposed memory model was CONFIRMED (11.66
-predicted, 11.76 measured) and the README's flat "+14% over static" rule was
-REFUTED. Throughput landed 0.17% from the central prediction.**
+**Outcome in one line: at `wider`, the decomposed memory model's prediction
+beat the README's flat "+14% over static" rule (11.66 vs 11.98 predicted,
+11.76 measured), refuting the flat rule. Throughput landed 0.17% from the
+central prediction.**
+
+> ## SUPERSEDED IN PART by the `deeper` run
+>
+> This document originally concluded that the decomposed memory model was
+> "CONFIRMED". The third measured point refutes that. Split the claim:
+>
+> - **Stands:** the flat "+14%" rule is refuted. Two predictions were compared
+>   head-to-head against one measurement and the decomposed one was closer.
+> - **Withdrawn:** that the decomposed *form* is correct. `deeper` measured
+>   **9.66 GiB** against 10.21 and 10.52 GiB predicted, outside both bands, and
+>   no two-parameter model of this form fits all three points — one
+>   leave-one-out fit even requires a negative bytes-per-activation-unit.
+>
+> One point of agreement is not validation. `wider` sat near the
+> smoke-calibrated line, so agreeing with it was interpolation luck. See
+> `g5/results/deeper-prediction.md` and `python3 g5/predict.py --form-test`.
+>
+> The throughput results below are unaffected and were strengthened: the FLOP
+> model went on to predict `deeper` to −0.03%.
 
 ## Why this file exists
 

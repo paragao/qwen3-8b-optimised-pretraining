@@ -97,6 +97,49 @@ WIDER_MEASURED = dict(
     loss_last=0.1902,
 )
 
+# ---------------------------------------------------------------------------
+# Measured `deeper` run (2026-10-02 18:25). This is the THIRD point, and it
+# fell outside BOTH predicted bands (R2b) -- see g5/results/deeper-prediction.md.
+#   g5/results/run-20261002-192536.log
+# ---------------------------------------------------------------------------
+DEEPER_MEASURED = dict(
+    peak_allocated_gib=9.66,
+    peak_reserved_gib=10.03,
+    step_time_s=0.872,
+    tokens_per_step=16384,
+    tokens_per_s=18793,
+    model_tflop_s=36.7,
+    params_m=455.9,
+    skipped_iterations=0,
+    nan_iterations=0,
+    loss_first=12.1410,
+    loss_last=0.2943,
+)
+
+# ---------------------------------------------------------------------------
+# Measured REAL-DATA run (2026-10-02 18:55): `smoke` geometry, real c4.
+# Controlled single-variable change against SMOKE_MEASURED -- only the data
+# source differs. 1000 iterations, 1 epoch, no token seen twice.
+#   g5/results/run-20261002-195550.log
+# ---------------------------------------------------------------------------
+C4_MEASURED = dict(
+    peak_allocated_gib=6.84,
+    peak_reserved_gib=7.26,
+    step_time_s=0.331,
+    tokens_per_s=24727,
+    iterations=1000,
+    tokens_consumed=8_192_000,
+    dataset_sequences=12247,
+    dataset_tokens=12247 * 4096,
+    samples_available=48939,
+    samples_consumed=8000,
+    epochs=1,
+    loss_first=12.1809,
+    loss_last=5.8633,
+    skipped_iterations=0,
+    nan_iterations=0,
+)
+
 # train.py defaults: micro_batch_size=1, global_batch_size=8 (lines 204-205).
 # So a global step is 8 gradient-accumulation micro-steps, and peak activation
 # memory is that of a SINGLE micro-batch of size 1.
@@ -449,7 +492,11 @@ def score(param_count) -> int:
         err = peak - pred
         print(f"    {label:<12} error     : {err:+.2f} GiB ({100 * err / peak:+.2f}%)")
     if in_r1 and not in_r2:
-        print("  VERDICT: decomposed model CONFIRMED; flat +14% rule REFUTED.")
+        print("  VERDICT: at wider, the decomposed prediction beat the flat +14% rule,")
+        print("           which is REFUTED. But see --form-test: the decomposed FORM")
+        print("           is itself refuted by the deeper run (9.66 measured vs 10.21")
+        print("           and 10.52 predicted). Agreeing here was interpolation luck,")
+        print("           not validation.")
     elif in_r2 and not in_r1:
         print("  VERDICT: flat +14% rule CONFIRMED; decomposition REFUTED.")
     else:
@@ -504,12 +551,110 @@ def score(param_count) -> int:
     return 0 if (r6_ok and r7_ok) else 1
 
 
+def form_test(param_count) -> int:
+    """Test whether a 2-parameter linear residual model fits all THREE points.
+
+    `wider` appeared to confirm the decomposed model. `deeper` landed outside
+    both predicted bands, which moves the question from "which constants" to
+    "is the FORM right". A model of the shape
+
+        residual = alpha * logits_bytes(seq) + beta * (layers * seq * hidden)
+
+    has two free parameters, so any two points fix it exactly. If the form were
+    right, the fit from any two points would predict the third. This checks all
+    three leave-one-out fits.
+    """
+    measured = {
+        "smoke": SMOKE_MEASURED["peak_allocated_gib"],
+        "wider": WIDER_MEASURED["peak_allocated_gib"],
+        "deeper": DEEPER_MEASURED["peak_allocated_gib"],
+    }
+    pts = {}
+    print("=" * 74)
+    print("FORM TEST: does one 2-parameter model fit all three measured points?")
+    print("=" * 74)
+    print("\n  --- measured residuals over static @18 B/param ---")
+    for name, peak in measured.items():
+        arch = PROFILES[name]
+        static = param_count(arch, VOCAB_SIZE)["total"] * 18
+        pts[name] = dict(arch=arch, peak=peak, static=static,
+                         resid=peak * GIB - static,
+                         L=logits_bytes(arch), u=activation_units(arch))
+        p = pts[name]
+        print(f"  {name:<7} seq={arch['seq_length']:<5} layers={arch['num_layers']:<3} "
+              f"hidden={arch['hidden_size']:<5} | static {static / GIB:6.3f} "
+              f"resid {p['resid'] / GIB:6.4f} GiB")
+
+    def solve(a, b):
+        A, B = pts[a], pts[b]
+        det = A["L"] * B["u"] - B["L"] * A["u"]
+        if det == 0:
+            return None
+        return ((A["resid"] * B["u"] - B["resid"] * A["u"]) / det,
+                (A["L"] * B["resid"] - B["L"] * A["resid"]) / det)
+
+    print("\n  --- leave-one-out: fit on two points, predict the third ---")
+    names = list(pts)
+    worst, negative_beta = 0.0, False
+    for held in names:
+        pair = [n for n in names if n != held]
+        sol = solve(*pair)
+        if sol is None:
+            print(f"  fit on {pair} is singular")
+            continue
+        alpha, beta = sol
+        H = pts[held]
+        pred = alpha * H["L"] + beta * H["u"]
+        err = (pred - H["resid"]) / GIB
+        worst = max(worst, abs(err))
+        if beta < 0:
+            negative_beta = True
+        flag = "  <-- NEGATIVE, physically impossible" if beta < 0 else ""
+        print(f"  fit {pair[0]:<6}+{pair[1]:<7} alpha={alpha:7.4f} "
+              f"beta={beta:7.2f} B/unit{flag}")
+        print(f"      predicts {held:<7} {pred / GIB:6.4f} GiB vs measured "
+              f"{H['resid'] / GIB:6.4f}  ERROR {err:+.4f} GiB "
+              f"({100 * err / (H['resid'] / GIB):+.1f}%)")
+
+    print(f"\n  worst leave-one-out error : {worst:.4f} GiB")
+    if negative_beta:
+        print("  one fit needs a NEGATIVE bytes-per-activation-unit, which no")
+        print("  physical allocation can have. That alone refutes the form.")
+
+    print("\n  --- why the form was never testable from these profiles ---")
+    for a, b in (("smoke", "wider"), ("smoke", "deeper"), ("wider", "deeper")):
+        A, B = pts[a]["arch"], pts[b]["arch"]
+        diffs = [k for k in ("num_layers", "hidden_size", "seq_length")
+                 if A[k] != B[k]]
+        print(f"  {a:<7} -> {b:<7} co-varies {len(diffs)}: "
+              + ", ".join(f"{k} {A[k]}->{B[k]}" for k in diffs))
+    print("  No pair is a single-variable change, so a model fitted to one pair")
+    print("  has no basis for extrapolating. The apparent success on `wider`")
+    print("  was interpolation luck, not a validated form.")
+
+    print("\n  --- what IS validated: the FLOP model ---")
+    for name, m in (("smoke", SMOKE_MEASURED), ("wider", WIDER_MEASURED),
+                    ("deeper", DEEPER_MEASURED)):
+        pred = flops_per_step(param_count, PROFILES[name])["total"]
+        implied = m["model_tflop_s"] * 1e12 * m["step_time_s"]
+        print(f"  {name:<7} predicted {pred / 1e12:6.2f} TFLOP  "
+              f"implied {implied / 1e12:6.2f}  err {100 * (pred - implied) / implied:+6.2f}%")
+    print("  Calibrated on smoke alone and never refitted, it holds to within")
+    print("  0.04% across changes in layers, hidden_size AND seq_length.")
+    print("=" * 74)
+    # Non-zero: the memory form IS refuted, and this should be visible in CI.
+    return 1 if worst > 0.35 else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--self-check", action="store_true",
                     help="verify the lifted formula and calibrated models")
     ap.add_argument("--score", action="store_true",
                     help="grade the measured wider run against committed thresholds")
+    ap.add_argument("--form-test", action="store_true",
+                    help="test whether one 2-parameter memory model fits all "
+                         "three measured points (it does not)")
     ap.add_argument("--profile", default="wider", choices=sorted(PROFILES),
                     help="profile to predict (default: wider)")
     args = ap.parse_args()
@@ -519,6 +664,8 @@ def main() -> int:
         return self_check(param_count)
     if args.score:
         return score(param_count)
+    if args.form_test:
+        return form_test(param_count)
     report(param_count, args.profile)
     return 0
 

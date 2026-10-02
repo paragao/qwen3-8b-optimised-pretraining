@@ -138,3 +138,128 @@ documented design, by switching to a split slice.
 Document length need not equal the training `seq_length`: Megatron's GPTDataset
 concatenates documents and re-splits them into `seq_length + 1` samples, which
 is the same property that doc relies on.
+
+---
+
+# OUTCOME — measured 2026-10-02 18:55
+
+Log: `g5/results/run-20261002-195550.log`.
+
+**Headline: the data path works, and the loss curve is real. D3 passed — no
+collapse. 4 of 5 predictions hit; the final loss came in slightly BETTER than
+predicted.**
+
+## Validity gates — this is the part that matters
+
+| Gate | Evidence from the log | Verdict |
+|---|---|---|
+| **D1** real data | line 62: `dataset: real Megatron-indexed data at /workspace/run/datasets/c4_qwen3` | **PASS** |
+| **D2** not mock | `mock=False`; zero occurrences of `MockGPTDataset` | **PASS** |
+
+The log goes further than D1/D2 asked, and settles the memorisation question
+outright:
+
+```
+> total number of sequences: 12247          -> 50,163,712 tokens built
+> total number of samples:   48939          -> available to train on
+Building GPTDataset splits with sizes=(8000, 0, 0)
+> total number of epochs:    1
+```
+
+**8,000 samples consumed out of 48,939 available, in exactly 1 epoch.** Every
+token was seen at most **once**. A 5.86 loss reached under those conditions
+cannot be memorisation — which is precisely what the mock runs could not claim.
+
+## Predictions
+
+| # | Quantity | Predicted | Measured | |
+|---|---|---|---|---|
+| **P1** | first loss | 11.5 - 12.5 | **12.1809** | HIT |
+| **P2** | final loss | 6.0 - 9.5 | **5.8633** | **MISS — 0.137 below, better than predicted** |
+| **P3** | peak allocated | 6.84 +/- 0.10 GiB | **6.84 GiB** | HIT, exact |
+| **P4** | median tok/s | 24,757 +/- 5% | **24,727** (−0.12%) | HIT |
+| **P5** | skipped / NaN | 0 / 0 | **0 / 0** | HIT |
+
+P2 is a miss and I am counting it as one: I predicted the model would not get
+below 6.0 nats on 8.2M tokens and it reached 5.8633. The direction is the
+benign one — it learned slightly faster than expected — but the prediction was
+still wrong and the band should have been wider at the bottom.
+
+## The loss curve, read properly
+
+| | mock `smoke` | **real c4 `smoke`** |
+|---|---|---|
+| first loss | 12.1481 | 12.1809 |
+| final loss | **0.2801** (50 steps) | **5.8633** (1000 steps) |
+| `ln(151936)` reference | 11.9312 | 11.9312 |
+| data seen | 400 synthetic samples, repeated | 8,000 real samples, **1 epoch** |
+
+Both start ~0.25 nats above uniform guessing, the correct signature of a fresh
+random init. Then they diverge completely: the mock run **collapses to 0.28**
+by memorising 400 synthetic samples, while real c4 settles at **5.86** — a
+plausible early-training cross-entropy for a 359M model that has seen 8.2M
+tokens once, which is **0.114%** of Chinchilla-optimal for its size.
+
+5.86 nats is consistent with a model that has learned token frequency
+structure and some local context, and is nowhere near converged. That is the
+right answer for this token budget, and it is the first interpretable loss
+number this validation has produced.
+
+## A new behaviour: real data has a step-time tail
+
+This did not appear on mock data and is worth recording.
+
+| | mock `smoke` | real c4 `smoke` |
+|---|---|---|
+| median step | 0.331 s | 0.331 s (identical) |
+| stdev | 0.001 s | **0.042 s** |
+| max step | 0.335 s (1.01x median) | **0.781 s (2.36x median)** |
+| p99 | — | 0.334 s (1.01x median) |
+| median tok/s | 24,757 | 24,727 |
+| mean tok/s | 24,754 | **24,598** |
+
+The distribution is **bimodal, not noisy**: exactly **9 of 999 steady-state
+steps (0.90%)** exceed 1.1x the median, and all 9 also exceed 2.0x it. p99 is
+still 1.01x median, so 99% of steps are untouched. Total wall time lost to
+stalls is **4.2 s of 335 s (1.2%)**.
+
+That pattern — a clean median with rare large outliers roughly every ~110
+steps — looks like mmap page faults as the loader walks into new regions of the
+`.bin`, not steady dataloader starvation. D7 (median < 22,000 tok/s) passed
+comfortably, so real data is effectively free in throughput terms; but quote
+the **median**, because the mean understates it by 0.6% and a short run could
+catch a stall and understate it much more.
+
+## P3 confirms something about the memory model
+
+Peak allocated was **6.84 GiB, byte-identical to the mock run** at the same
+geometry, and peak reserved likewise identical at 7.26 GiB. The data source
+changes GPU allocation not at all, which is what D6 predicted and which
+retrospectively justifies treating the mock runs' memory figures as valid
+measurements despite the meaningless loss.
+
+## What this establishes, and what it does not
+
+**Establishes:** the full data path works end to end — c4 streamed from
+HuggingFace, tokenised with the real Qwen3 tokenizer, written to Megatron
+`.bin`/`.idx`, read back by `GPTDataset`, trained on for 1000 steps with 0
+skipped and 0 NaN iterations and a loss curve that behaves like real training.
+`g5/prepare_c4.py` worked on first execution, including the streaming download
+that had never been run.
+
+**Does not establish:** anything about Qwen3-8B's convergence, any model
+quality claim, or that these hyperparameters are good. At 0.114% of
+Chinchilla-optimal tokens on a 4-layer proxy, this says the pipeline is sound
+and nothing about the model.
+
+## The three recorded caveats, resolved
+
+All three risks flagged before the run turned out not to bite:
+
+1. **Authentication** — not needed. `allenai/c4` streamed with no `HF_TOKEN`,
+   confirming the token was never required and that
+   `preprocessing/preprocess.py`'s hard exit on it is an unnecessary gate.
+2. **Streaming shard layout** — worked as expected; 12,247 documents of 4,096
+   tokens built cleanly.
+3. **Tokenisation time** — the whole prep plus a 1000-step run fitted inside
+   the session with no trouble.

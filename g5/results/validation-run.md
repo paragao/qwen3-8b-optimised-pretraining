@@ -107,28 +107,33 @@ had ample headroom — the scaling was conservative.
 
 ### Superseded by the `wider` run
 
-The "+14% activation margin" advice above was a one-point rule of thumb, and it
-has since been **refuted** by the `wider` profile. Scaling the static figure by
-a flat percentage is the wrong shape, because the largest single activation
-(FP32 vocab logits) is constant in `num_layers` and `hidden_size`. For `wider`
-the flat rule predicted 11.98 GiB against a measured **11.76 GiB**, while a
-decomposed model predicted 11.66 GiB — and the two bands were committed
-disjoint beforehand, so the measurement discriminated between them.
+The "+14% activation margin" advice above was a one-point rule of thumb and is
+**refuted**: `wider` measured 11.76 GiB against its 11.98 GiB flat-rule
+prediction.
 
-Use `python3 g5/predict.py --profile <name>` for sizing. Full scoring in
-`g5/results/wider-prediction.md`.
+Its decomposed replacement is **also refuted**, by `deeper`. Do not use either
+to size a new shape — measure it.
 
-| | `smoke` | `wider` |
-|---|---|---|
-| static @18 B/param | 6.02 GiB | 10.55 GiB |
-| measured peak allocated | 6.84 GiB | **11.76 GiB** |
-| measured peak reserved | 7.26 GiB | 12.25 GiB |
-| residual over static | 0.82 GiB (+13.5%) | 1.21 GiB (+11.4%) |
-| fragmentation (reserved − alloc) | 0.42 GiB | 0.49 GiB |
+| | `smoke` | `wider` | `deeper` |
+|---|---|---|---|
+| static @18 B/param | 6.02 GiB | 10.55 GiB | 7.64 GiB |
+| measured peak allocated | 6.84 GiB | **11.76 GiB** | **9.66 GiB** |
+| measured peak reserved | 7.26 GiB | 12.25 GiB | 10.03 GiB |
+| residual over static | 0.82 GiB (+13.5%) | 1.21 GiB (+11.4%) | **2.02 GiB (+26.4%)** |
+| fragmentation (reserved − alloc) | 0.42 GiB | 0.49 GiB | 0.37 GiB |
 
-The residual *percentage* falls as the model grows (13.6% -> 11.4%), which is
-the flat rule's error made visible: the constant logits term is a shrinking
-share of a growing static figure.
+The residual share does **not** move monotonically with model size (13.5% ->
+11.4% -> 26.4%), which is the clearest single sign that no simple scaling of
+the static figure works. `deeper` is the only profile at `seq_length` 2048 and
+carries by far the largest residual share, consistent with sequence length
+driving the activation terms — though these three profiles co-vary too many
+parameters to attribute it properly.
+
+**Empirical sizing rule:** peak allocated ran **11-26% above** the 18 B/param
+static figure across these three shapes. Treat 18 B/param as a floor and budget
+to the top of that range. `python3 g5/predict.py --form-test` shows why a
+model-based prediction is not trustworthy here; full detail in
+`g5/results/deeper-prediction.md`.
 
 ## Throughput: measured
 

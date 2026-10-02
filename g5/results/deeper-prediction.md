@@ -107,3 +107,144 @@ round-trips **both** measured points (6.84 and 11.76 GiB) and reproduces the
 0.8660 logits fraction. That round-trip is the only check the exact solve can
 fail, and it is what proves the solve itself is arithmetically right even
 though it is not a validated model.
+
+---
+
+# OUTCOME — measured 2026-10-02 18:25
+
+Log: `g5/results/run-20261002-192536.log`.
+Reproduce the analysis with `python3 g5/predict.py --form-test`.
+
+**Headline: R2b fired. The measurement fell outside BOTH bands, and that
+refutes the memory model's FORM, not just its constants.**
+
+## Validity gates
+
+| Gate | Measured | Verdict |
+|---|---|---|
+| **R6** TOTAL params | **455.9 M** (expected 455.9 M) | **VALID** |
+| **R7** skipped / NaN | **0 / 0** over 50 steps | PASS — BF16 stable at 12 layers / seq 2048 |
+
+## Memory: both predictions were wrong, in the same direction
+
+| Hypothesis | Predicted | Band | Measured | Verdict |
+|---|---|---|---|---|
+| R1 smoke-only calibration | 10.21 GiB | [10.07, 10.35] | **9.66 GiB** | **MISS** (over by 0.55) |
+| R2 two-point calibration | 10.52 GiB | [10.39, 10.66] | **9.66 GiB** | **MISS** (over by 0.86) |
+| R2b outside both | — | — | **9.66 GiB** | **FIRED** |
+
+Peak reserved 10.03 GiB, so fragmentation is 0.37 GiB. At 9.66 GiB the profile
+used 43.0% of the card, against a predicted 45.4-46.8%.
+
+## Why: the model form cannot fit three points
+
+The residual model has two free parameters:
+
+```
+residual = alpha * logits_bytes(seq) + beta * (layers * seq * hidden)
+```
+
+Two points fix it exactly. If the form were right, any two points would predict
+the third. All three leave-one-out fits fail:
+
+| Fit on | alpha | beta (B/unit) | Predicts | Measured | Error |
+|---|---|---|---|---|---|
+| wider + deeper | 3.1044 | **−67.44** | smoke 1.5358 | 0.8151 | **+0.72 GiB (+88.4%)** |
+| smoke + deeper | 1.2391 | 24.81 | wider 0.9363 | 1.2065 | −0.27 GiB (−22.4%) |
+| smoke + wider | 0.8660 | 80.17 | deeper 2.8828 | 2.0179 | **+0.86 GiB (+42.9%)** |
+
+The first fit requires a **negative** bytes-per-activation-unit. No physical
+allocation can have that, so the form is refuted on its own terms before the
+error magnitudes are even considered.
+
+## The experiment design was weak, and that is the real lesson
+
+None of the three profiles is a single-variable change from any other:
+
+| | co-varies |
+|---|---|
+| `smoke` -> `wider` | num_layers 4->6, **and** hidden_size 1024->1536 |
+| `smoke` -> `deeper` | num_layers 4->12, **and** seq_length 1024->2048 |
+| `wider` -> `deeper` | num_layers, hidden_size **and** seq_length |
+
+A two-parameter model fitted to one such pair has no basis for extrapolating to
+a third point. **`wider` appearing to confirm the decomposed model was
+interpolation luck, not validation** — it happened to sit near the
+smoke-calibrated line. `deeper` is the first point far enough away to expose
+that, and it did.
+
+### Correcting the previous conclusion
+
+`g5/results/wider-prediction.md` reports "the decomposed memory model was
+CONFIRMED". That needs splitting in two:
+
+- **Still true:** at `wider`, the decomposed prediction (11.66) beat the flat
+  "+14%" rule (11.98) against a measured 11.76. That was a head-to-head
+  comparison of two predictions against one measurement, and the flat rule's
+  refutation stands.
+- **No longer true:** that the decomposed form is *correct*. It is not. One
+  point of agreement is not validation, and the third point refutes it.
+
+## What would actually settle it
+
+A **single-variable sweep**, which none of these profiles provides:
+
+1. **seq sweep** at fixed layers and hidden (`smoke` geometry at seq 512,
+   1024, 2048, 4096). At fixed layers and hidden both candidate terms are
+   linear in seq, so the residual must be linear in seq. Curvature would show
+   directly whether the logits term grows sub-linearly — which is the leading
+   suspicion, since both failing fits over-predict the high-seq point.
+2. **layers sweep** at fixed seq and hidden (`smoke` at 4, 8, 12, 16 layers).
+   Separates the per-layer term cleanly.
+
+Each is ~6 runs of under a minute. Until then the honest sizing advice is the
+empirical one: 18 B/param is a floor, measured residuals ran 11-26% above it
+across these three shapes, and an untested shape should be measured rather than
+predicted.
+
+## Throughput: every prediction held
+
+| | Predicted | Measured | |
+|---|---|---|---|
+| FLOPs/step | 31.99 TFLOP | 32.00 TFLOP | **−0.03%** |
+| median tok/s | 15,824-19,460 (R3 band [15,033, 20,433]) | **18,793** | **HIT** |
+| s/step | 0.842-1.035 | 0.872 | in range |
+| R8 faster than `wider`? | yes | 18,793 > 14,357 | **PASS** |
+| R4 MODEL_TFLOP/s >= 30.9 | yes | **36.7** | PASS |
+
+**The FLOP model is now validated on three architectures.** Calibrated on
+`smoke` alone and never refitted:
+
+| | predicted | implied by measurement | error |
+|---|---|---|---|
+| smoke | 10.22 TFLOP | 10.23 | −0.04% |
+| wider | 19.94 TFLOP | 19.93 | +0.04% |
+| deeper | 31.99 TFLOP | 32.00 | **−0.03%** |
+
+That spans changes in `num_layers`, `hidden_size` **and** `seq_length`. The
+contrast with the memory model is the useful result of this run: one model
+generalised across all three axes, the other did not survive its first
+genuinely out-of-sample point.
+
+## Sequence length substitutes for width, and then some
+
+I recorded before the run that R4 was weak here and that I had no confident
+prediction, because `deeper` returns to hidden 1024 and does not widen GEMMs.
+The answer is unambiguous:
+
+| | hidden | seq | MODEL_TFLOP/s | MFU |
+|---|---|---|---|---|
+| `smoke` | 1024 | 1024 | 30.9 | 24.7% |
+| `wider` | **1536** | 1024 | 34.9 (+12.9%) | 27.9% |
+| `deeper` | 1024 | **2048** | **36.7 (+18.8%)** | **29.4%** |
+
+`deeper` is the **most** efficient of the three at the **narrowest** width.
+Doubling sequence length bought more than increasing hidden size by 50% did,
+presumably by enlarging the GEMM M dimension while leaving weights cache-
+
+friendly. Also worth noting: `deeper` has *fewer* parameters than `wider`
+(455.9 M vs 629.5 M) yet does 1.605x the FLOPs per step, so parameter count is
+not a proxy for step cost.
+
+Loss moved 12.1410 -> 0.2943 on mock data, which means nothing — see the
+real-data run for an interpretable curve.
