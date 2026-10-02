@@ -22,6 +22,24 @@ REGION="${REGION:-us-west-2}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-g5.8xlarge}"
 NAME="${NAME:-qwen3-g5-validation}"
 ROOT_VOLUME_GB="${ROOT_VOLUME_GB:-300}"
+
+# How many instances. A g5.8xlarge has exactly ONE A10G (verified:
+# ec2 describe-instance-types reports GpuInfo.Gpus[0].Count = 1), so the
+# instance count IS the data-parallel degree.
+#
+#   NODES=1 (default) : zero-ingress security group. Nothing can reach the
+#                       instance; access is SSM only.
+#   NODES=2           : the torchrun rendezvous must cross between the two
+#                       instances, so ONE ingress rule is added on
+#                       MASTER_PORT whose source is the security group
+#                       ITSELF. That means only instances in this group can
+#                       reach it -- not the VPC, and not the internet.
+NODES="${NODES:-1}"
+MASTER_PORT="${MASTER_PORT:-29500}"
+if [[ "${NODES}" != "1" && "${NODES}" != "2" ]]; then
+  echo "FATAL: NODES=${NODES}; this script supports 1 or 2." >&2
+  exit 1
+fi
 # Deep Learning Base OSS Nvidia Driver GPU AMI: ships the NVIDIA driver, Docker
 # and the NVIDIA container toolkit. The NeMo container brings its own
 # PyTorch/CUDA userspace, so the "base" variant is all we need.
@@ -115,27 +133,76 @@ else
   echo "    exists, reusing ${SG_ID}"
 fi
 
-# Assert the invariant rather than trusting it: a stale SG could carry ingress.
+# For 2 nodes the rendezvous has to cross between instances. The rule's source
+# is the security group ITSELF (UserIdGroupPairs), not a CIDR -- so the only
+# things that can reach MASTER_PORT are instances in this same group. A CIDR
+# would widen it to the whole subnet or VPC; 0.0.0.0/0 would expose an
+# unauthenticated PyTorch rendezvous store to the internet. Neither is used.
+if [[ "${NODES}" -gt 1 ]]; then
+  echo "==> 2 nodes: granting tcp/${MASTER_PORT} from ${SG_ID} to itself"
+  if aws ec2 authorize-security-group-ingress \
+      --group-id "${SG_ID}" \
+      --ip-permissions "IpProtocol=tcp,FromPort=${MASTER_PORT},ToPort=${MASTER_PORT},UserIdGroupPairs=[{GroupId=${SG_ID},Description=\"torchrun rendezvous between cluster nodes only\"}]" \
+      >/dev/null 2>&1; then
+    echo "    added (source = the group itself, NOT a CIDR)"
+  else
+    echo "    already present, or add failed; the assertion below will decide"
+  fi
+fi
+
+# Assert the invariant rather than trusting it: a stale SG could carry ingress
+# that nothing in this script put there.
+#   NODES=1 -> exactly 0 ingress rules
+#   NODES=2 -> exactly 1, and it must be the self-referencing rendezvous rule
+EXPECT_INGRESS=$(( NODES > 1 ? 1 : 0 ))
 INGRESS_COUNT="$(aws ec2 describe-security-groups --group-ids "${SG_ID}" \
   --query 'length(SecurityGroups[0].IpPermissions)' --output text)"
-if [[ "${INGRESS_COUNT}" != "0" ]]; then
-  echo "FATAL: security group ${SG_ID} has ${INGRESS_COUNT} ingress rule(s); expected 0." >&2
-  echo "       Inspect it, or delete it and re-run to get a clean egress-only group." >&2
+if [[ "${INGRESS_COUNT}" != "${EXPECT_INGRESS}" ]]; then
+  echo "FATAL: security group ${SG_ID} has ${INGRESS_COUNT} ingress rule(s); expected ${EXPECT_INGRESS}." >&2
+  echo "       Inspect it, or delete it and re-run to get a clean group." >&2
+  aws ec2 describe-security-groups --group-ids "${SG_ID}" \
+    --query 'SecurityGroups[0].IpPermissions' --output json >&2 || true
   exit 1
 fi
-echo "    verified: 0 ingress rules"
+
+if [[ "${NODES}" -gt 1 ]]; then
+  # Verify the shape, not just the count: a rule on the right port that is
+  # open to a CIDR would pass a count check while being the exact thing this
+  # is meant to prevent.
+  CIDRS="$(aws ec2 describe-security-groups --group-ids "${SG_ID}" \
+    --query 'SecurityGroups[0].IpPermissions[].IpRanges[].CidrIp' --output text)"
+  if [[ -n "${CIDRS}" ]]; then
+    echo "FATAL: the rendezvous rule has CIDR source(s): ${CIDRS}" >&2
+    echo "       It must be sourced from the security group itself. Refusing" >&2
+    echo "       to launch with a CIDR-scoped rendezvous port." >&2
+    exit 1
+  fi
+  PEER_SG="$(aws ec2 describe-security-groups --group-ids "${SG_ID}" \
+    --query 'SecurityGroups[0].IpPermissions[0].UserIdGroupPairs[0].GroupId' --output text)"
+  if [[ "${PEER_SG}" != "${SG_ID}" ]]; then
+    echo "FATAL: rendezvous rule source is ${PEER_SG}, expected ${SG_ID}" >&2
+    exit 1
+  fi
+  echo "    verified: 1 ingress rule, tcp/${MASTER_PORT}, source = ${SG_ID} (self), no CIDRs"
+else
+  echo "    verified: 0 ingress rules"
+fi
 
 # ---------------------------------------------------------------------- launch
-echo "==> launching 1x ${INSTANCE_TYPE}"
-INSTANCE_ID=""
+echo "==> launching ${NODES}x ${INSTANCE_TYPE}"
+INSTANCE_IDS=()
 LAUNCH_ERR="$(mktemp)"
 trap 'rm -f "${LAUNCH_ERR}"' EXIT
 
+# All nodes go in ONE subnet, so one AZ. Cross-AZ would add latency to every
+# gradient all-reduce, and the all-reduce is already the limiting factor on a
+# 25 Gbit link (see the scaling table in g5/README.md). --count ${NODES} also
+# means EC2 either places them all or fails, rather than leaving one orphan.
 for subnet in "${CANDIDATE_SUBNETS[@]}"; do
   az="$(aws ec2 describe-subnets --subnet-ids "${subnet}" \
     --query 'Subnets[0].AvailabilityZone' --output text)"
-  echo "    trying ${az} (${subnet})"
-  if INSTANCE_ID="$(aws ec2 run-instances \
+  echo "    trying ${az} (${subnet}) for ${NODES} instance(s)"
+  if IDS="$(aws ec2 run-instances \
       --image-id "${AMI_ID}" \
       --instance-type "${INSTANCE_TYPE}" \
       --subnet-id "${subnet}" \
@@ -145,18 +212,20 @@ for subnet in "${CANDIDATE_SUBNETS[@]}"; do
       --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${ROOT_VOLUME_GB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true,\"Encrypted\":true}}]" \
       --tag-specifications \
           "ResourceType=instance,Tags=[{Key=Name,Value=${NAME}},{Key=Purpose,Value=qwen3-single-gpu-stack-validation},{Key=Ephemeral,Value=true}]" \
-      --count 1 \
-      --query 'Instances[0].InstanceId' --output text 2>"${LAUNCH_ERR}")"; then
+      --count "${NODES}" \
+      --query 'Instances[].InstanceId' --output text 2>"${LAUNCH_ERR}")"; then
     SUBNET_ID="${subnet}"
-    echo "    launched in ${az}: ${INSTANCE_ID}"
+    # shellcheck disable=SC2206
+    INSTANCE_IDS=(${IDS})
+    echo "    launched in ${az}: ${INSTANCE_IDS[*]}"
     break
   fi
 
   # Capacity is the one error worth trying another AZ for. Anything else
   # (quota, permissions, bad AMI) will fail identically everywhere, so stop.
   if grep -q "InsufficientInstanceCapacity\|Unsupported" "${LAUNCH_ERR}"; then
-    echo "    no capacity in ${az}, trying the next AZ"
-    INSTANCE_ID=""
+    echo "    no capacity for ${NODES}x in ${az}, trying the next AZ"
+    INSTANCE_IDS=()
     continue
   fi
   echo "FATAL: run-instances failed for a reason unrelated to capacity:" >&2
@@ -164,44 +233,88 @@ for subnet in "${CANDIDATE_SUBNETS[@]}"; do
   exit 1
 done
 
-if [[ -z "${INSTANCE_ID}" || "${INSTANCE_ID}" == "None" ]]; then
-  echo "FATAL: no ${INSTANCE_TYPE} capacity in any candidate AZ." >&2
-  echo "       Retry later, or try another region with REGION=... ." >&2
+if [[ "${#INSTANCE_IDS[@]}" -ne "${NODES}" ]]; then
+  echo "FATAL: no ${INSTANCE_TYPE} capacity for ${NODES} instance(s) in any" >&2
+  echo "       candidate AZ. Retry later, or try another region with REGION=..." >&2
   exit 1
 fi
-echo "    INSTANCE_ID=${INSTANCE_ID}"
+echo "    INSTANCE_IDS=${INSTANCE_IDS[*]}"
 
-echo "==> waiting for instance to reach running + status ok"
-aws ec2 wait instance-running --instance-ids "${INSTANCE_ID}"
-aws ec2 wait instance-status-ok --instance-ids "${INSTANCE_ID}"
+echo "==> waiting for ${NODES} instance(s) to reach running + status ok"
+aws ec2 wait instance-running --instance-ids "${INSTANCE_IDS[@]}"
+aws ec2 wait instance-status-ok --instance-ids "${INSTANCE_IDS[@]}"
 
-echo "==> waiting for the SSM agent to register (up to 5 min)"
+echo "==> waiting for the SSM agent to register on every node (up to 5 min)"
 for i in $(seq 1 30); do
-  ONLINE="$(aws ssm describe-instance-information \
-    --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
-    --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
-  if [[ "${ONLINE}" == "Online" ]]; then echo "    SSM Online"; break; fi
+  ONLINE_COUNT="$(aws ssm describe-instance-information \
+    --filters "Key=InstanceIds,Values=$(IFS=,; echo "${INSTANCE_IDS[*]}")" \
+    --query 'length(InstanceInformationList[?PingStatus==`Online`])' \
+    --output text 2>/dev/null || echo 0)"
+  if [[ "${ONLINE_COUNT}" == "${NODES}" ]]; then
+    echo "    SSM Online on all ${NODES}"
+    ONLINE="Online"
+    break
+  fi
   sleep 10   # linear poll; SSM registration is seconds-to-minutes, not hours
 done
 if [[ "${ONLINE:-}" != "Online" ]]; then
-  echo "FATAL: SSM agent did not come Online for ${INSTANCE_ID}." >&2
-  echo "       The instance is RUNNING and still billing. Terminate it with:" >&2
-  echo "       ./g5/terminate-instance.sh ${INSTANCE_ID}" >&2
+  echo "FATAL: SSM agent did not come Online on all ${NODES} node(s)." >&2
+  echo "       The instance(s) are RUNNING and still billing. Terminate with:" >&2
+  echo "       ./g5/terminate-instance.sh ${INSTANCE_IDS[*]}" >&2
   exit 1
 fi
 
+# Private IPv4 of each node. Node 0's address is what the other node needs as
+# MASTER_ADDR, and g5/run.sh refuses anything that is not an RFC1918 address.
+PRIVATE_IPS=()
+for id in "${INSTANCE_IDS[@]}"; do
+  PRIVATE_IPS+=("$(aws ec2 describe-instances --instance-ids "${id}" \
+    --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)")
+done
+
 echo
 echo "================================================================"
-echo " instance : ${INSTANCE_ID}  (${INSTANCE_TYPE}, ${REGION})"
+echo " nodes    : ${NODES}x ${INSTANCE_TYPE} in ${REGION}"
+for i in "${!INSTANCE_IDS[@]}"; do
+  echo "   rank ${i} : ${INSTANCE_IDS[$i]}  private ${PRIVATE_IPS[$i]}"
+done
 echo " ami      : ${AMI_ID}"
-echo " sg       : ${SG_ID}  (0 ingress rules)"
-echo " connect  : aws ssm start-session --target ${INSTANCE_ID} --region ${REGION}"
-echo " TEARDOWN : ./g5/terminate-instance.sh ${INSTANCE_ID}"
+if [[ "${NODES}" -gt 1 ]]; then
+  echo " sg       : ${SG_ID}  (1 ingress rule: tcp/${MASTER_PORT} from itself)"
+else
+  echo " sg       : ${SG_ID}  (0 ingress rules)"
+fi
+echo " connect  : aws ssm start-session --target ${INSTANCE_IDS[0]} --region ${REGION}"
+echo " TEARDOWN : ./g5/terminate-instance.sh ${INSTANCE_IDS[*]}"
 echo "================================================================"
-# Record the REGION as well as the id: the instance is not necessarily in the
-# default region (GPU capacity often forces another), and a teardown pointed at
-# the wrong region silently leaves a billing instance running.
+if [[ "${NODES}" -gt 1 ]]; then
+  echo
+  echo "To start the 2-node run, on EACH node (same command except NODE_RANK):"
+  echo
+  echo "  # rank 0 (${INSTANCE_IDS[0]})"
+  echo "  NNODES=2 NODE_RANK=0 MASTER_ADDR=${PRIVATE_IPS[0]} \\"
+  echo "    GLOBAL_BATCH_SIZE=16 DATA_PATH=/workspace/run/datasets/c4_qwen3 \\"
+  echo "    TRAIN_ITERS=1000 ./g5/run.sh"
+  echo
+  echo "  # rank 1 (${INSTANCE_IDS[1]})"
+  echo "  NNODES=2 NODE_RANK=1 MASTER_ADDR=${PRIVATE_IPS[0]} \\"
+  echo "    GLOBAL_BATCH_SIZE=16 DATA_PATH=/workspace/run/datasets/c4_qwen3 \\"
+  echo "    TRAIN_ITERS=1000 ./g5/run.sh"
+  echo
+  echo "MASTER_ADDR is rank 0's PRIVATE address on both. GLOBAL_BATCH_SIZE=16"
+  echo "(not 8) is what makes the second node worth paying for -- at a fixed"
+  echo "batch size the gradient all-reduce does not shrink and you gain ~5%."
+  echo
+  echo "Each node needs its OWN copy of the dataset: run ./g5/prepare-c4.sh on"
+  echo "both, since there is no shared filesystem here. (The EKS path uses one"
+  echo "ReadWriteMany volume instead -- see g5/eks/pretrain.yaml.)"
+fi
+# Record the REGION as well as the ids: the instances are not necessarily in
+# the default region (GPU capacity often forces another), and a teardown
+# pointed at the wrong region silently leaves billing instances running.
 cat > "$(dirname "${BASH_SOURCE[0]}")/.last-instance-id" <<EOF
-INSTANCE_ID=${INSTANCE_ID}
+INSTANCE_ID=${INSTANCE_IDS[0]}
+INSTANCE_IDS=${INSTANCE_IDS[*]}
+NODES=${NODES}
 REGION=${REGION}
 EOF

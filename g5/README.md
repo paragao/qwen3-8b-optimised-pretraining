@@ -1,15 +1,36 @@
 # Single-GPU stack validation on g5.8xlarge (1x A10G 24 GB)
 
+# Stack validation on g5.8xlarge: 1 or 2 nodes, Docker or EKS
+
 A fast, cheap way to check that this repo's training stack — NeMo 26.04,
 Megatron-Bridge, the Qwen3 model definition, the tokenizer and the data path —
 is healthy, without booking a 2-node H200 or B300 cluster.
 
-> **This is not a Qwen3-8B pre-training run, and it produces no performance
-> numbers.** Qwen3-8B needs 137.3 GiB of static state at DP=1 against 22.5 GiB
-> of A10G, 6.11x over. See [`../docs/single-gpu-memory-budget.md`](../docs/single-gpu-memory-budget.md)
+Four layouts, same `g5/train.py` in every one:
+
+| | nodes | GPUs | launcher | how |
+|---|---|---|---|---|
+| single instance | 1 | 1 | `g5/run.sh` | [On an existing GPU box](#on-an-existing-gpu-box) |
+| two instances | 2 | 2 | `g5/run.sh` per node | [Two nodes](#two-nodes-2x-g58xlarge) |
+| EKS, one pod | 1 | 1 | `g5/eks/pretrain.yaml` | [Running on EKS](#running-on-eks) |
+| EKS, two pods | 2 | 2 | `g5/eks/pretrain.yaml` | [Running on EKS](#running-on-eks) |
+
+Each g5.8xlarge has exactly **one** A10G (`ec2 describe-instance-types` reports
+`GpuInfo.Gpus[0].Count = 1`, 22888 MiB, 25 Gigabit, `EfaSupported: true`), so
+the node count **is** the data-parallel degree and `nproc_per_node` is always 1.
+
+Both mock and real **c4** data are supported — see
+[Training on the c4 dataset](#training-on-the-c4-dataset). Use real data if you
+care about the loss curve at all; the mock dataset's curve is meaningless.
+
+> **This is not a Qwen3-8B pre-training run, and it produces no comparable
+> performance numbers.** Qwen3-8B needs 137.3 GiB of static state at DP=1
+> against 22.5 GiB of A10G, 6.11x over. See
+> [`../docs/single-gpu-memory-budget.md`](../docs/single-gpu-memory-budget.md)
 > for the arithmetic and for why `hidden_size`, not just `num_layers`, has to
 > come down. Throughput, TFLOP/s and MFU comparisons belong to
 > [`../h200/`](../h200/) and [`../b300/`](../b300/) only.
+
 
 ## What it does validate
 
@@ -209,32 +230,86 @@ vocab logits, which are `SEQ_LENGTH x 151936 x 4 B` per micro-batch copy and are
 the largest single activation in the model: 622 MB at `seq=1024`, 1.24 GB at
 `seq=2048`. If a run OOMs, cut `NUM_LAYERS` or `SEQ_LENGTH` first.
 
-## Using real data instead of the mock dataset
+## Training on the c4 dataset
 
-The mock dataset keeps this validation self-contained, but its loss curve is
-**not interpretable** — see the warning under Profiles. For a real loss curve:
+The mock dataset keeps the validation self-contained and offline, but **its
+loss curve is not a learning signal** — see the warning under
+[What it does validate](#what-it-does-validate). Real c4 is two commands.
+
+### Step 1: build the dataset
 
 ```bash
-# 1. Build a bounded c4 dataset on the instance (CPU only, no GPU needed)
-./g5/prepare-c4.sh                        # 50M tokens, the default budget
+./g5/prepare-c4.sh                        # 50M tokens (default), ~200 MB .bin
 NUM_TOKENS=200000000 ./g5/prepare-c4.sh   # bigger budget
+```
 
-# 2. Train against it. DATA_PATH is the IN-CONTAINER path.
+CPU only — it requests no GPU, so it can run while the A10G is idle or busy.
+It streams `allenai/c4` and stops at the token budget, so the download is
+bounded by what you actually consume. **No `HF_TOKEN` is needed**; `allenai/c4`
+is public, and a measured run confirmed it streams unauthenticated.
+
+It is idempotent: an existing verified build is reused rather than
+re-downloaded, so re-running after a failure is cheap.
+
+Sizing the budget: a run consumes `TRAIN_ITERS x GLOBAL_BATCH_SIZE x
+SEQ_LENGTH` tokens. The 50M default is ~6x a 1000-step `smoke` run, so no token
+is seen twice — which is what makes a falling loss curve meaningful rather than
+memorisation.
+
+### Step 2: train on it
+
+```bash
 DATA_PATH=/workspace/run/datasets/c4_qwen3 TRAIN_ITERS=1000 ./g5/run.sh
+```
 
-# Or both in one step, driven from a laptop:
+> **`DATA_PATH` is a path INSIDE the container, not on the host.** `g5/run.sh`
+> mounts `RUN_BASE` at `/workspace/run` and passes `DATA_PATH` straight
+> through, so a host path like `~/qwen3-g5/run/datasets/...` does not exist in
+> the container and `train.py` will reject it. Use the `/workspace/run/...`
+> form. `g5/finish-run.sh` translates between the two and prints both.
+
+`train.py` fails fast with an explicit message if `DATA_PATH` is set but the
+`.idx` is missing, rather than silently falling back to mock data.
+
+### Or both in one command, from a laptop
+
+```bash
 PREPARE_C4=1 TRAIN_ITERS=1000 ./g5/finish-run.sh
 ```
 
-**`DATA_PATH` is a path inside the container, not on the host.** `g5/run.sh`
-mounts `RUN_BASE` at `/workspace/run` and passes `DATA_PATH` straight through,
-so a host path like `~/qwen3-g5/run/datasets/...` does not exist in the
-container and `train.py`'s `.idx` check will reject it. Use the
-`/workspace/run/...` form. `g5/finish-run.sh` translates between the two for
-its pre-flight check and prints both.
+This tunnels SSH over SSM (**no security-group rule needed** — the SSM agent
+dials out), builds the dataset, verifies it, runs, parses throughput and
+retrieves the log. It defaults `DATA_PATH` after a `PREPARE_C4=1` build, so you
+cannot pay for a download and then silently train on mock data.
 
-`train.py` fails fast with an explicit message if `DATA_PATH` is set but the
-`.idx` file is missing, rather than silently falling back to mock data.
+### Confirming you actually got real data
+
+Three lines in the log, and they are worth checking because the failure mode is
+a *successful-looking* mock run:
+
+```
+dataset: real Megatron-indexed data at /workspace/run/datasets/c4_qwen3
+mock=False
+> total number of epochs: 1
+```
+
+`epochs: 1` is the one that matters: it means no token was seen twice. A
+measured 1000-step `smoke` run on real c4 moved the loss **12.1809 -> 5.8633**,
+against the mock run's **12.1481 -> 0.2801** at identical geometry. The mock
+collapse is degenerate fitting of 400 synthetic samples; 5.86 nats is a
+plausible early-training cross-entropy for a 359M model that has seen 8.2M
+tokens once (0.114% of Chinchilla-optimal for its size).
+
+If a real-data run drops below ~2.0, treat it as a **defect**, not fast
+convergence: the dataset is probably repeating or far smaller than reported.
+
+### Real data adds a step-time tail
+
+Measured on the 1000-step run: the median step is **unchanged** (0.331 s, same
+as mock) but **9 of 999 steps (0.90%)** exceed 2x the median, p99 is still
+1.01x, and 1.2% of wall clock is lost to stalls. Quote the **median** — the
+mean understates throughput by 0.6%, and a short run that catches a stall
+understates it much more.
 
 ### Why not `preprocessing/preprocess.py`
 
@@ -249,16 +324,186 @@ is unusable on a single g5.8xlarge:
 | verification | none | `--self-test` and `--verify-only` |
 
 The streaming approach is what this repo's own
-`docs/data-loading-explained.md` (line 41) already prescribes;
-`preprocess.py` is what diverged from it.
+[`../docs/data-loading-explained.md`](../docs/data-loading-explained.md) (line
+41) already prescribes; `preprocess.py` is what diverged from it.
+
+Document length need not equal the training `seq_length`: Megatron's
+`GPTDataset` concatenates documents and re-splits them into `seq_length + 1`
+samples.
 
 Verify the format writer offline, with numpy alone and no network:
 
 ```bash
-python3 g5/prepare_c4.py --self-test          # round-trip + corruption rejection
-python3 g5/prepare_c4.py --verify-only PREFIX # check an existing build
+python3 g5/prepare_c4.py --self-test           # round-trip + corruption rejection
+python3 g5/prepare_c4.py --verify-only PREFIX  # check an existing build
 ```
 
 `prepare_c4.py` reuses `write_idx_file` lifted out of
 `preprocessing/preprocess.py` rather than copying it, so the on-disk Megatron
 format cannot drift between the two paths.
+
+## Two nodes (2x g5.8xlarge)
+
+Two instances give **DP=2**: two nodes, one A10G each. Launch both at once:
+
+```bash
+NODES=2 ./g5/launch-instance.sh
+```
+
+That puts both in **one subnet** (one AZ — cross-AZ would add latency to every
+all-reduce) and adds exactly **one** security-group ingress rule: TCP 29500
+whose source is *the security group itself*. Only instances in that group can
+reach the rendezvous — not the VPC, not the internet. The script asserts that
+shape and refuses to launch if the rule has a CIDR source.
+
+Then on **each** node — identical except `NODE_RANK`, and `MASTER_ADDR` is
+rank 0's **private** address on both (the launcher prints the exact commands):
+
+```bash
+# rank 0
+NNODES=2 NODE_RANK=0 MASTER_ADDR=10.0.1.42 GLOBAL_BATCH_SIZE=16 \
+  DATA_PATH=/workspace/run/datasets/c4_qwen3 TRAIN_ITERS=1000 ./g5/run.sh
+
+# rank 1
+NNODES=2 NODE_RANK=1 MASTER_ADDR=10.0.1.42 GLOBAL_BATCH_SIZE=16 \
+  DATA_PATH=/workspace/run/datasets/c4_qwen3 TRAIN_ITERS=1000 ./g5/run.sh
+```
+
+`run.sh` refuses a `MASTER_ADDR` that is not RFC1918 or cluster-internal DNS,
+and refuses a non-loopback address when `NNODES=1`, so a rendezvous cannot be
+bound to a public interface by accident.
+
+Run `./g5/prepare-c4.sh` on **both** nodes: there is no shared filesystem on
+this path, so each needs its own copy of the dataset. (The EKS path uses one
+ReadWriteMany volume instead.)
+
+Tear both down in one call:
+
+```bash
+./g5/terminate-instance.sh                    # reads g5/.last-instance-id
+./g5/terminate-instance.sh i-0aaa i-0bbb      # or explicitly
+```
+
+### GLOBAL_BATCH_SIZE=16 is not optional
+
+`tokens/step` is `GLOBAL_BATCH_SIZE x seq_length` **regardless of node count**.
+So at a *fixed* batch size, adding a node halves the compute per rank but does
+not shrink the gradient all-reduce, whose volume is set by parameter count.
+Using the measured per-GPU TFLOP/s against the 25 Gbit link:
+
+| profile | all-reduce | 1-node step | 2-node best | speedup |
+|---|---|---|---|---|
+| `smoke` | 719 MB | 331 ms | 311 ms | **1.07x** |
+| `wider` | 1259 MB | 571 ms | 543 ms | **1.05x** |
+| `deeper` | 912 MB | 872 ms | 469 ms | 1.86x |
+
+`smoke` and `wider` are **comm-bound** (all-reduce / compute = 1.54 and 1.57),
+so a second instance doubles the bill for ~5%. Doubling `GLOBAL_BATCH_SIZE`
+instead keeps per-rank compute at its 1-node value and doubles tokens/step,
+amortising the same all-reduce over twice the work:
+
+| profile | tok/step | 1-node tok/s | 2-node tok/s | speedup |
+|---|---|---|---|---|
+| `smoke` | 16,384 | 24,757 | 44,781 | **1.81x** |
+| `wider` | 16,384 | 14,357 | 25,677 | **1.79x** |
+| `deeper` | 32,768 | 18,793 | 37,589 | **2.00x** |
+
+Both tables assume EFA **and** perfect overlap of the all-reduce with the
+backward pass, so treat them as **ceilings, not forecasts**. Reproduce the
+derivation from the measured figures in
+[`results/validation-run.md`](results/validation-run.md). Note that scaling the
+batch changes the optimisation (larger effective batch), so a 2-node run is not
+a like-for-like comparison with a 1-node one.
+
+`g5/train.py` enables `overlap_grad_reduce`, `overlap_param_gather` and the
+distributed optimizer automatically when `WORLD_SIZE > 1`, and leaves all three
+off at `WORLD_SIZE == 1` — so the three recorded single-node measurements remain
+valid. It also rejects a `GLOBAL_BATCH_SIZE` that is not divisible by
+`nodes x MICRO_BATCH_SIZE` with an actionable message.
+
+**The better reason to add a node is memory, not speed.** The distributed
+optimizer shards optimizer state across DP ranks, so a larger proxy fits per
+GPU. Measure it rather than predicting it — this repo's analytic memory model
+was refuted by the `deeper` run.
+
+## Running on EKS
+
+[`g5/eks/pretrain.yaml`](eks/pretrain.yaml) runs the same `g5/train.py` on 1 or
+2 g5.8xlarge pods. One file, six resources, all namespaced.
+
+### Prerequisites
+
+1. An EKS cluster with a g5.8xlarge node group (1 or 2 nodes).
+2. The NVIDIA device plugin, so nodes advertise `nvidia.com/gpu`:
+   ```bash
+   kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml
+   kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.'nvidia\.com/gpu'
+   ```
+3. A StorageClass for the dataset volume. **2 nodes needs ReadWriteMany
+   (EFS)** — both pods mmap the same `.bin`/`.idx`. An EBS volume cannot be
+   mounted by two nodes and the second pod hangs `Pending`. For 1 node, switch
+   the PVC to `ReadWriteOnce` on your EBS class.
+4. The repo reachable by `git clone` at the ref in the ConfigMap. An init
+   container clones it rather than baking an image, so `g5/train.py` in the
+   cluster is the same file as in the repo and cannot drift.
+
+### Run it
+
+```bash
+./g5/eks/set-nodes.sh 1          # or 2
+python3 g5/eks/validate.py       # catches mismatches kubectl would accept
+kubectl apply -f g5/eks/pretrain.yaml
+
+kubectl -n qwen3-pretrain wait --for=condition=complete job/c4-prep --timeout=30m
+kubectl -n qwen3-pretrain logs -f job/qwen3-pretrain -c train
+
+kubectl delete namespace qwen3-pretrain   # teardown
+```
+
+Use `set-nodes.sh` rather than editing by hand. Four values must move together
+(`parallelism`, `completions`, `NNODES`, `GLOBAL_BATCH_SIZE`), and the failure
+modes are quiet: if `parallelism` is 2 but `NNODES` is 1 you get two
+independent `WORLD_SIZE=1` runs that look fine, and the reverse waits forever
+for a rank that never joins. `validate.py` checks all four agree, plus the
+Service cross-references and the exposure properties.
+
+### How the pods find each other
+
+`completionMode: Indexed` gives each pod a stable `JOB_COMPLETION_INDEX` (used
+directly as `--node_rank`) and a stable hostname `<job-name>-<index>`. With the
+headless Service as `subdomain`, rank 0 is always at:
+
+```
+qwen3-pretrain-0.qwen3-rdzv.qwen3-pretrain.svc.cluster.local
+```
+
+`publishNotReadyAddresses: true` is required — rank 1 must resolve rank 0
+*before* rank 0 is serving, or the rendezvous deadlocks waiting for a DNS record
+that only appears once the pod is ready. An init container waits for that name
+to resolve and fails with a pointed message after 60s.
+
+### Network exposure
+
+The rendezvous Service is **headless** (`clusterIP: None`): DNS records for
+pod-to-pod traffic, no cluster IP, no NodePort, no LoadBalancer, no
+`hostNetwork`, no `hostPort`. The training port is reachable only by pods in
+the cluster, which is the job's own network.
+
+**Do not change it to `type: NodePort` or `type: LoadBalancer` to make
+debugging easier.** That publishes a port carrying an unauthenticated PyTorch
+rendezvous store onto the node or the internet. To observe a run use
+`kubectl logs` or `kubectl port-forward`, which tunnel through the API server
+and need no exposure. `g5/eks/validate.py` asserts all of this.
+
+### Notes
+
+- The prep Job requests **no GPU**, so dataset building never occupies the
+  A10G.
+- `/dev/shm` is a 16Gi Memory-medium `emptyDir` (the Kubernetes equivalent of
+  `--shm-size=16g`). It counts against the pod memory limit, which is why that
+  limit is 96Gi.
+- `backoffLimit: 0`: a distributed job cannot usefully restart one rank out of
+  two, so it fails rather than retrying into a half-dead rendezvous.
+- EFA is supported on g5.8xlarge but **not** wired up here; the manifest uses
+  the TCP path, which needs no device plugin. The scaling tables above assume
+  EFA, so measured 2-node throughput will be somewhat below them.

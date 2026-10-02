@@ -1,0 +1,489 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# ============================================================================
+# Qwen3 proxy pre-training on EKS: 1 or 2 x g5.8xlarge, real c4 data
+# ============================================================================
+#
+# Each g5.8xlarge has exactly ONE A10G (verified: ec2 describe-instance-types
+# reports GpuInfo.Gpus[0].Count = 1, 22888 MiB, 25 Gigabit, EfaSupported true).
+# So nproc_per_node is always 1 and the NODE COUNT is the data-parallel degree:
+#
+#   NODES=1  -> DP=1, single pod, rendezvous never leaves the pod
+#   NODES=2  -> DP=2, two pods on two nodes, rendezvous over cluster DNS
+#
+# To switch between them you change ONE pair of numbers (parallelism and
+# completions on the training Job) and GLOBAL_BATCH_SIZE. See the header of the
+# Job at the bottom.
+#
+# ---------------------------------------------------------------------------
+# NETWORK EXPOSURE -- read before changing the Service
+# ---------------------------------------------------------------------------
+# The rendezvous Service below is HEADLESS (clusterIP: None). It creates DNS
+# records for pod-to-pod traffic inside the cluster and allocates no cluster IP,
+# no NodePort and no LoadBalancer, so the training port is reachable only by
+# pods in this cluster -- which is the job's own network.
+#
+# Do NOT change it to type: NodePort or type: LoadBalancer to "make debugging
+# easier". That would publish a port carrying an unauthenticated PyTorch
+# rendezvous store onto the node or the internet. If you need to observe the
+# job, use `kubectl logs` or `kubectl port-forward` (which tunnels through the
+# API server and needs no exposure).
+#
+# ---------------------------------------------------------------------------
+# PREREQUISITES
+# ---------------------------------------------------------------------------
+#   1. An EKS cluster with a g5.8xlarge node group (1 or 2 nodes).
+#   2. The NVIDIA device plugin, so nodes advertise nvidia.com/gpu:
+#        kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml
+#        kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.'nvidia\.com/gpu'
+#   3. A StorageClass for the dataset volume. See the PVC comments: EFS is
+#      required for 2 nodes, EBS is fine for 1.
+#   4. The repo reachable by `git clone` at the ref in the ConfigMap. The init
+#      container clones it rather than baking an image, so that g5/train.py in
+#      the cluster is the same file as in the repo and cannot drift.
+#
+# ---------------------------------------------------------------------------
+# APPLY
+# ---------------------------------------------------------------------------
+#   kubectl apply -f g5/eks/pretrain.yaml          # creates ns, config, PVC, svc
+#   kubectl -n qwen3-pretrain wait --for=condition=complete job/c4-prep --timeout=30m
+#   kubectl -n qwen3-pretrain logs -f job/qwen3-pretrain -c train
+#
+# Everything is namespaced, so teardown is one command:
+#   kubectl delete namespace qwen3-pretrain
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qwen3-pretrain
+  labels:
+    app.kubernetes.io/name: qwen3-pretrain
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen3-config
+  namespace: qwen3-pretrain
+data:
+  # --- where the code comes from -------------------------------------------
+  REPO_URL: "https://github.com/paragao/qwen3-8b-optimised-pretraining.git"
+  # Pin a ref. The g5 multi-node support lives on this branch until it merges.
+  REPO_REF: "feat/g5-single-gpu-validation"
+
+  # --- dataset -------------------------------------------------------------
+  # Token budget for the c4 build. 50M is ~6x what a 1000-step smoke run
+  # consumes, so no token is seen twice. The .bin is 4 bytes/token.
+  NUM_TOKENS: "50000000"
+  DOC_LENGTH: "4096"
+  # Prefix WITHOUT the .bin/.idx suffix, on the shared volume.
+  DATA_PATH: "/data/c4_qwen3"
+
+  # --- model geometry: the `smoke` profile (4 layers, hidden 1024, seq 1024)
+  # Leave a value empty to take g5/train.py's default. For the other profiles:
+  #   wider : NUM_LAYERS=6  HIDDEN_SIZE=1536 FFN_HIDDEN_SIZE=4608
+  #           NUM_ATTENTION_HEADS=12 NUM_QUERY_GROUPS=3
+  #   deeper: NUM_LAYERS=12 SEQ_LENGTH=2048
+  NUM_LAYERS: "4"
+  HIDDEN_SIZE: "1024"
+  FFN_HIDDEN_SIZE: "3072"
+  NUM_ATTENTION_HEADS: "8"
+  NUM_QUERY_GROUPS: "2"
+  SEQ_LENGTH: "1024"
+
+  # --- batch ---------------------------------------------------------------
+  MICRO_BATCH_SIZE: "1"
+  # MUST be divisible by (nodes x MICRO_BATCH_SIZE); g5/train.py rejects it
+  # otherwise with an actionable message.
+  #   1 node : 8
+  #   2 nodes: 16   <-- scale this WITH the node count, see the Job header
+  GLOBAL_BATCH_SIZE: "8"
+
+  TRAIN_ITERS: "1000"
+  LOG_INTERVAL: "10"
+  DATA_NUM_WORKERS: "8"
+  SAVE_CHECKPOINT: "0"
+
+  # --- distributed ---------------------------------------------------------
+  # NNODES must equal the training Job's parallelism/completions. Use
+  # g5/eks/set-nodes.sh to change both together rather than editing by hand --
+  # a mismatch makes torchrun wait forever for a rank that will never join.
+  NNODES: "1"
+  MASTER_PORT: "29500"
+  # <job-name>-<index> is the pod hostname under completionMode: Indexed, and
+  # qwen3-rdzv is the headless Service, so rank 0 is always at this name.
+  MASTER_ADDR: "qwen3-pretrain-0.qwen3-rdzv.qwen3-pretrain.svc.cluster.local"
+  # EKS pods use eth0. Pinning it stops NCCL probing veth/docker interfaces.
+  NCCL_SOCKET_IFNAME: "eth0"
+  NCCL_DEBUG: "WARN"
+---
+# Shared dataset volume.
+#
+# 1 NODE : ReadWriteOnce on EBS works. Set accessModes to [ReadWriteOnce] and
+#          storageClassName to your EBS class (often "gp2" or "gp3").
+# 2 NODES: ReadWriteMany is REQUIRED. Both pods mmap the same .bin/.idx, and
+#          each data-parallel rank reads a different slice of the same file.
+#          On EKS that means EFS via the EFS CSI driver. An EBS volume cannot
+#          be mounted by two nodes, and the second pod will hang Pending.
+#
+# Defaults to RWX/EFS because that configuration works for BOTH layouts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen3-data
+  namespace: qwen3-pretrain
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      # 50M tokens x 4 bytes = 200 MB for the .bin, plus the HuggingFace
+      # streaming cache during the build. 50Gi is generous.
+      storage: 50Gi
+---
+# Headless Service for the torchrun rendezvous.
+#
+# clusterIP: None means: DNS records for the pods, NO cluster IP, NO NodePort,
+# NO LoadBalancer. Reachable from inside the cluster only. With an Indexed Job,
+# pod hostnames are <job-name>-<index>, so rank 0 is reliably addressable at
+#   qwen3-pretrain-0.qwen3-rdzv.qwen3-pretrain.svc.cluster.local
+#
+# publishNotReadyAddresses is required: rank 1 must resolve rank 0 BEFORE rank 0
+# is serving, or the rendezvous deadlocks waiting for a DNS record that only
+# appears once the pod is ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-rdzv
+  namespace: qwen3-pretrain
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: qwen3-pretrain
+  ports:
+    - name: rendezvous
+      port: 29500
+      targetPort: 29500
+      protocol: TCP
+---
+# ============================================================================
+# Job 1: build the c4 dataset into the shared volume. Runs ONCE.
+# ============================================================================
+# CPU only -- no GPU is requested, so this never occupies the A10G and can run
+# while the node group is otherwise idle. g5/prepare_c4.py streams c4 and stops
+# at the token budget, so the download is bounded (preprocessing/preprocess.py
+# would pull every shard of the `en` config before slicing -- see its section
+# in g5/README.md).
+#
+# Idempotent: prepare_c4.py verifies an existing build and reuses it, so
+# re-running this Job after a failure does not re-download.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: c4-prep
+  namespace: qwen3-pretrain
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: qwen3-c4-prep
+    spec:
+      restartPolicy: OnFailure
+      # Pin to the same instance type so the dataset is built in the same AZ as
+      # the EFS mount target the training pods will use.
+      nodeSelector:
+        node.kubernetes.io/instance-type: g5.8xlarge
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: qwen3-data
+        - name: repo
+          emptyDir: {}
+      initContainers:
+        - name: clone
+          image: alpine/git:2.45.2
+          command:
+            - sh
+            - -ceu
+            - |
+              git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" /repo
+              test -f /repo/g5/prepare_c4.py || {
+                echo "FATAL: g5/prepare_c4.py missing at ref ${REPO_REF}" >&2
+                exit 1
+              }
+              test -f /repo/preprocessing/preprocess.py || {
+                echo "FATAL: preprocessing/preprocess.py missing -- prepare_c4.py" >&2
+                echo "       lifts write_idx_file out of it" >&2
+                exit 1
+              }
+              echo "cloned ${REPO_REF} at $(git -C /repo rev-parse --short HEAD)"
+          env:
+            - name: REPO_URL
+              valueFrom:
+                configMapKeyRef: {name: qwen3-config, key: REPO_URL}
+            - name: REPO_REF
+              valueFrom:
+                configMapKeyRef: {name: qwen3-config, key: REPO_REF}
+          volumeMounts:
+            - {name: repo, mountPath: /repo}
+      containers:
+        - name: prep
+          # The NeMo image already has datasets + transformers.
+          image: nvcr.io/nvidia/nemo:26.04
+          command:
+            - bash
+            - -ceu
+            - |
+              echo "Building c4: ${NUM_TOKENS} tokens -> ${DATA_PATH}"
+              python3 /repo/g5/prepare_c4.py \
+                --output-prefix "${DATA_PATH}" \
+                --num-tokens "${NUM_TOKENS}" \
+                --doc-length "${DOC_LENGTH}"
+              echo "Verifying what was written:"
+              python3 /repo/g5/prepare_c4.py --verify-only "${DATA_PATH}"
+          envFrom:
+            - configMapRef: {name: qwen3-config}
+          env:
+            # Keep the HuggingFace cache on the shared volume, not the pod's
+            # ephemeral disk, so a retry does not re-download.
+            - name: HF_HOME
+              value: /data/hf
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: repo, mountPath: /repo, readOnly: true}
+          resources:
+            requests: {cpu: "8", memory: 16Gi}
+            limits:   {cpu: "30", memory: 64Gi}
+---
+# ============================================================================
+# Job 2: the training run. THIS is the file you edit to go from 1 node to 2.
+# ============================================================================
+#
+#   ONE g5.8xlarge                    TWO g5.8xlarge
+#   ------------------                --------------------
+#   parallelism: 1                    parallelism: 2
+#   completions: 1                    completions: 2
+#   GLOBAL_BATCH_SIZE: "8"            GLOBAL_BATCH_SIZE: "16"   (in ConfigMap)
+#
+# Nothing else changes. completionMode: Indexed gives each pod a stable
+# JOB_COMPLETION_INDEX, used directly as torchrun's --node_rank, and a stable
+# hostname <job-name>-<index> for the rendezvous.
+#
+# WHY GLOBAL_BATCH_SIZE MUST SCALE WITH THE NODE COUNT
+# ----------------------------------------------------
+# tokens/step is GLOBAL_BATCH_SIZE x seq_length regardless of node count. So at
+# a FIXED GBS, adding a node halves the compute per rank but does not shrink
+# the gradient all-reduce, whose volume is set by parameter count. Measured
+# per-GPU figures against a 25 Gbit link give these UPPER BOUNDS:
+#
+#   profile   AR volume   DP=1 step   2-node best   speedup
+#   smoke       719 MB      331 ms      311 ms       1.07x   <- comm-bound
+#   wider      1259 MB      571 ms      543 ms       1.05x   <- comm-bound
+#   deeper      912 MB      872 ms      469 ms       1.86x
+#
+# Doubling GBS instead keeps per-rank compute at its DP=1 value and doubles
+# tokens/step, amortising the same all-reduce over twice the work:
+#
+#   profile   tok/step   DP=1 tok/s   2-node tok/s   speedup
+#   smoke       16,384      24,757         44,781     1.81x
+#   wider       16,384      14,357         25,677     1.79x
+#   deeper      32,768      18,793         37,589     2.00x
+#
+# Both tables assume EFA and perfect overlap, so treat them as ceilings. The
+# derivation is in g5/README.md. Note this changes the OPTIMISATION (larger
+# effective batch), so it is not a like-for-like comparison with a 1-node run.
+#
+# The other reason to use 2 nodes is MEMORY: g5/train.py enables the
+# distributed optimizer at DP>1, sharding optimizer state across ranks so a
+# larger proxy fits per GPU. Measure it rather than predicting it -- this
+# repo's analytic memory model was refuted by the `deeper` run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen3-pretrain
+  namespace: qwen3-pretrain
+spec:
+  completionMode: Indexed
+  # ---- 1 node: both 1. 2 nodes: both 2. ----
+  parallelism: 1
+  completions: 1
+  # A distributed job cannot usefully restart one rank out of two, so fail the
+  # whole Job rather than retrying into a half-dead rendezvous.
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: qwen3-pretrain
+    spec:
+      restartPolicy: Never
+      # Must match the headless Service name, or the pods get no DNS records
+      # and the rendezvous cannot resolve rank 0.
+      subdomain: qwen3-rdzv
+      nodeSelector:
+        node.kubernetes.io/instance-type: g5.8xlarge
+      # Each g5.8xlarge has exactly 1 A10G, so requesting nvidia.com/gpu: 1
+      # already forces one pod per node. This anti-affinity makes that explicit
+      # so the intent survives a move to a multi-GPU instance type.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: qwen3-pretrain
+              topologyKey: kubernetes.io/hostname
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: qwen3-data
+        - name: repo
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        # Dataloader workers need shared memory. The docker path uses
+        # --shm-size=16g; the Kubernetes equivalent is a Memory-medium emptyDir
+        # at /dev/shm. It counts against the pod's memory limit, which is why
+        # the limit below is well above 16Gi.
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+      initContainers:
+        - name: clone
+          image: alpine/git:2.45.2
+          command:
+            - sh
+            - -ceu
+            - |
+              git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" /repo
+              test -f /repo/g5/train.py || {
+                echo "FATAL: g5/train.py missing at ref ${REPO_REF}" >&2; exit 1; }
+              echo "cloned ${REPO_REF} at $(git -C /repo rev-parse --short HEAD)"
+          env:
+            - name: REPO_URL
+              valueFrom:
+                configMapKeyRef: {name: qwen3-config, key: REPO_URL}
+            - name: REPO_REF
+              valueFrom:
+                configMapKeyRef: {name: qwen3-config, key: REPO_REF}
+          volumeMounts:
+            - {name: repo, mountPath: /repo}
+        # Fail fast and loudly on the two things that otherwise manifest as a
+        # silent hang or a mock-data run.
+        - name: preflight
+          image: nvcr.io/nvidia/nemo:26.04
+          command:
+            - bash
+            - -ceu
+            - |
+              echo "index=${JOB_COMPLETION_INDEX} master=${MASTER_ADDR}"
+
+              # 1. The dataset must exist, or train.py falls back to the MOCK
+              #    dataset whose loss curve is meaningless.
+              for f in "${DATA_PATH}.bin" "${DATA_PATH}.idx"; do
+                test -f "$f" || {
+                  echo "FATAL: $f missing. Run the c4-prep Job first:" >&2
+                  echo "  kubectl -n qwen3-pretrain wait --for=condition=complete job/c4-prep" >&2
+                  exit 1
+                }
+              done
+              python3 /repo/g5/prepare_c4.py --verify-only "${DATA_PATH}"
+
+              # 2. Rank 0's DNS must resolve before torchrun starts, or the
+              #    static rendezvous errors instead of waiting.
+              if [ "${NNODES}" -gt 1 ]; then
+                for i in $(seq 1 60); do
+                  if getent hosts "${MASTER_ADDR}" >/dev/null 2>&1; then
+                    echo "resolved ${MASTER_ADDR} after ${i}s"; break
+                  fi
+                  [ "$i" -eq 60 ] && {
+                    echo "FATAL: ${MASTER_ADDR} did not resolve in 60s." >&2
+                    echo "       Check the headless Service selector matches" >&2
+                    echo "       app=qwen3-pretrain and publishNotReadyAddresses is true." >&2
+                    exit 1
+                  }
+                  sleep 1
+                done
+              fi
+          envFrom:
+            - configMapRef: {name: qwen3-config}
+          env:
+            - name: JOB_COMPLETION_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: "metadata.annotations['batch.kubernetes.io/job-completion-index']"
+          volumeMounts:
+            - {name: data, mountPath: /data, readOnly: true}
+            - {name: repo, mountPath: /repo, readOnly: true}
+      containers:
+        - name: train
+          image: nvcr.io/nvidia/nemo:26.04
+          # torchrun is invoked directly: g5/run.sh wraps `docker run`, which
+          # cannot nest inside a pod. The env below mirrors run.sh's -e flags.
+          command:
+            - bash
+            - -ceu
+            - |
+              echo "=== node_rank=${JOB_COMPLETION_INDEX} of ${NNODES} ==="
+              echo "    rendezvous: ${MASTER_ADDR}:${MASTER_PORT}"
+              echo "    dataset   : ${DATA_PATH}"
+              torchrun \
+                --nproc_per_node=1 \
+                --nnodes="${NNODES}" \
+                --node_rank="${JOB_COMPLETION_INDEX}" \
+                --master_addr="${MASTER_ADDR}" \
+                --master_port="${MASTER_PORT}" \
+                /repo/g5/train.py
+              if [ "${JOB_COMPLETION_INDEX}" = "0" ]; then
+                echo "=== throughput (rank 0) ==="
+                python3 /repo/g5/throughput.py /workspace/run/logs/*.log || true
+              fi
+          envFrom:
+            - configMapRef: {name: qwen3-config}
+          env:
+            - name: JOB_COMPLETION_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: "metadata.annotations['batch.kubernetes.io/job-completion-index']"
+            # NNODES and MASTER_ADDR come from the ConfigMap via envFrom above,
+            # so there is exactly one place to change them. torchrun derives
+            # WORLD_SIZE from NNODES, and g5/train.py switches the distributed
+            # optimizer and gradient-reduce overlap on when WORLD_SIZE > 1.
+            - name: RUN_BASE
+              value: /workspace/run
+            - name: TENSORBOARD_DIR
+              value: /workspace/run/tb_logs
+            - name: HF_HOME
+              value: /data/hf
+            - name: TORCH_COMPILE_DISABLE
+              value: "1"
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+            - name: CUDA_DEVICE_MAX_CONNECTIONS
+              value: "1"
+          ports:
+            # Declared for the headless Service's DNS records. This does NOT
+            # publish anything on the host -- a containerPort is documentation
+            # plus a Service target, not a host-port mapping.
+            - name: rendezvous
+              containerPort: 29500
+              protocol: TCP
+          volumeMounts:
+            - {name: data, mountPath: /data, readOnly: true}
+            - {name: repo, mountPath: /repo, readOnly: true}
+            - {name: run, mountPath: /workspace/run}
+            - {name: dshm, mountPath: /dev/shm}
+          resources:
+            requests:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: 1
+            limits:
+              # The A10G is 22888 MiB; the measured profiles peak at 6.84-11.76
+              # GiB, so there is headroom. Host memory must cover the 16Gi
+              # /dev/shm emptyDir plus the dataloader workers.
+              cpu: "30"
+              memory: 96Gi
+              nvidia.com/gpu: 1

@@ -69,6 +69,12 @@ CKPT_PATH = os.environ.get("CKPT_PATH", f"{RUN_BASE}/checkpoints/g5")
 # this validation self-contained and offline-capable.
 DATA_PATH = os.environ.get("DATA_PATH", "").strip()
 
+# Set by torchrun. 1 for a single g5.8xlarge; 2 for two of them (each has
+# exactly one A10G, verified via ec2 describe-instance-types). With TP=PP=1 the
+# whole world is data parallel, so WORLD_SIZE is the DP degree.
+WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
+RANK = int(os.environ.get("RANK", "0"))
+
 # Qwen3-8B reference architecture, for the scaling report below.
 QWEN3_8B_REF = dict(
     num_layers=36, hidden_size=4096, ffn_hidden_size=12288,
@@ -180,13 +186,17 @@ def main():
     counts = param_count(arch)
 
     # Rank 0 only, so the report appears once even if launched under torchrun.
-    if int(os.environ.get("RANK", "0")) == 0:
+    if RANK == 0:
         report(arch, counts)
 
     # Identical entrypoint to h200/train.py and b300/train.py.
     cfg = qwen3_8b_pretrain_config()
 
-    # ---- Parallelism: a single A10G. DP=1, nothing to shard or overlap. ----
+    # ---- Parallelism ----
+    # TP and PP stay at 1 on every supported layout. Each g5.8xlarge has
+    # exactly one A10G, so a second instance adds a DATA parallel rank, not a
+    # tensor or pipeline stage -- and TP across a 25 Gbit TCP/EFA link would be
+    # far worse than DP, since TP communicates per layer rather than per step.
     cfg.model.tensor_model_parallel_size = 1
     cfg.model.pipeline_model_parallel_size = 1
 
@@ -200,9 +210,33 @@ def main():
     # head_dim stays 128 as in Qwen3-8B when hidden/heads == 128.
     cfg.model.kv_channels = arch["hidden_size"] // arch["num_attention_heads"]
 
-    # ---- Batch: MBS=1 with gradient accumulation, DP=1 ----
+    # ---- Batch: MBS=1 with gradient accumulation; DP = WORLD_SIZE ----
     cfg.train.micro_batch_size = _env_int("MICRO_BATCH_SIZE", 1)
     cfg.train.global_batch_size = _env_int("GLOBAL_BATCH_SIZE", 8)
+
+    # Megatron requires global_batch_size to divide evenly by
+    # data_parallel_size * micro_batch_size. Catch it here with an actionable
+    # message instead of failing deep inside distributed setup.
+    per_step = WORLD_SIZE * cfg.train.micro_batch_size
+    if cfg.train.global_batch_size % per_step != 0:
+        raise SystemExit(
+            f"FATAL: GLOBAL_BATCH_SIZE={cfg.train.global_batch_size} is not "
+            f"divisible by WORLD_SIZE({WORLD_SIZE}) x "
+            f"MICRO_BATCH_SIZE({cfg.train.micro_batch_size}) = {per_step}. "
+            f"For {WORLD_SIZE} node(s) use a multiple of {per_step}, e.g. "
+            f"GLOBAL_BATCH_SIZE={per_step * 8}."
+        )
+    if RANK == 0:
+        grad_accum = cfg.train.global_batch_size // per_step
+        print(f"  data parallel size    : {WORLD_SIZE}", flush=True)
+        print(f"  grad accum per rank   : {grad_accum}", flush=True)
+        if WORLD_SIZE > 1:
+            print("  NOTE: at fixed GLOBAL_BATCH_SIZE, adding a node halves "
+                  "per-rank compute but", flush=True)
+            print("        NOT the gradient all-reduce, so throughput barely "
+                  "improves. Scale", flush=True)
+            print(f"        GLOBAL_BATCH_SIZE with the node count "
+                  f"(={8 * WORLD_SIZE}) for real gains.", flush=True)
 
     # ---- Short schedule: this is a validation, not a training run ----
     train_iters = _env_int("TRAIN_ITERS", 20)
@@ -242,11 +276,23 @@ def main():
     cfg.optimizer.adam_beta1 = 0.9
     cfg.optimizer.adam_beta2 = 0.95
     cfg.optimizer.clip_grad = 1.0
-    # DP=1: there is no peer to overlap a reduce or a gather with. Megatron
-    # rejects or no-ops these at world size 1, so turn them off explicitly
-    # rather than inheriting the 16-GPU recipe's True.
-    cfg.optimizer.overlap_grad_reduce = False
-    cfg.optimizer.overlap_param_gather = False
+    # Overlap is a DP>1 concept: at DP=1 there is no peer to overlap a reduce or
+    # a gather with, Megatron rejects or no-ops them, and the 16-GPU recipe's
+    # True would be misleading. At DP>1 (two g5.8xlarge = DP=2) the gradient
+    # all-reduce is a large fraction of step time on a 25 Gbit link, so
+    # overlapping it with the backward pass is what makes 2 nodes worth running.
+    # See the scaling table in g5/README.md.
+    if WORLD_SIZE > 1:
+        cfg.optimizer.overlap_grad_reduce = True
+        cfg.optimizer.overlap_param_gather = True
+        # Shards optimizer state across DP ranks (ZeRO-1 shape). This is the
+        # actual reason to add a second node: it reduces per-GPU static memory,
+        # where throughput only improves if GLOBAL_BATCH_SIZE scales too.
+        if hasattr(cfg.optimizer, "use_distributed_optimizer"):
+            cfg.optimizer.use_distributed_optimizer = True
+    else:
+        cfg.optimizer.overlap_grad_reduce = False
+        cfg.optimizer.overlap_param_gather = False
 
     # ---- Logging; checkpointing off by default to keep the run quick ----
     cfg.logger.log_interval = _env_int("LOG_INTERVAL", 1)
@@ -271,11 +317,13 @@ def main():
         cfg.checkpoint.load = None
 
     # ---- Throughput denominator ----
-    # tokens/step is exactly global_batch_size * seq_length at DP=1. Print it
-    # before the run so the figure is in the log even if the run dies, and so
+    # tokens/step is global_batch_size * seq_length at ANY data parallel size,
+    # because global_batch_size is global by definition -- adding a node splits
+    # the same step across more ranks rather than enlarging it. Printed before
+    # the run so the figure is in the log even if the run dies, and so
     # g5/throughput.py does not have to re-derive the batch geometry.
     tokens_per_step = cfg.train.global_batch_size * cfg.model.seq_length
-    if int(os.environ.get("RANK", "0")) == 0:
+    if RANK == 0:
         print(
             f"  tokens per step       : {tokens_per_step:,} "
             f"({cfg.train.global_batch_size} seq x {cfg.model.seq_length} tok)",
@@ -287,7 +335,7 @@ def main():
     pretrain(config=cfg, forward_step_func=forward_step)
     wall_elapsed = time.perf_counter() - wall_start
 
-    if int(os.environ.get("RANK", "0")) == 0:
+    if RANK == 0:
         gib = 1024 ** 3
         total_tokens = tokens_per_step * train_iters
         print("=" * 72, flush=True)
