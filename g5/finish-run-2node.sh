@@ -174,6 +174,22 @@ ssh_opts_for() {   # index -> prints the opts array for that node
     -o ProxyCommand="${PROXY}"
 }
 
+set_opts() {       # index -> fills the global OPTS array
+  # macOS ships bash 3.2, which has no `mapfile`/`readarray`, so read the
+  # option list with a plain loop. The redirection MUST be a process
+  # substitution rather than a pipe: a pipe would run the loop in a subshell
+  # and OPTS would be empty back here.
+  local i="$1" line
+  OPTS=()
+  while IFS= read -r line; do
+    OPTS+=("${line}")
+  done < <(ssh_opts_for "${i}")
+  # Under `set -u` bash 3.2 treats "${OPTS[@]}" on an empty array as an unbound
+  # variable, which would fail far from the cause. Fail here instead.
+  [[ "${#OPTS[@]}" -ge 2 ]] || {
+    echo "FATAL: ssh option list for node ${i} came back empty" >&2; exit 1; }
+}
+
 push_key() {       # index
   local i="$1"
   aws --profile "${PROFILE}" --region "${REGION}" \
@@ -187,7 +203,7 @@ push_key() {       # index
 
 say "Opening an SSH-over-SSM session to each node (5 attempts, backoff)"
 for i in 0 1; do
-  mapfile -t OPTS < <(ssh_opts_for "${i}")
+  set_opts "${i}"
   delay=4
   ok=0
   for attempt in 1 2 3 4 5; do
@@ -211,8 +227,9 @@ done
 # concurrently; each check is a no-op on an instance that already has them.
 say "Bootstrapping both nodes (repo clone + container image)"
 echo "    the image is ~77 GB, so a cold node takes ~20-30 min here"
+BOOT_PIDS=()
 for i in 0 1; do
-  mapfile -t OPTS < <(ssh_opts_for "${i}")
+  set_opts "${i}"
   ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" bash -s <<BOOT \
     > "${KEYDIR}/boot-${i}.log" 2>&1 &
 set -euo pipefail
@@ -239,10 +256,16 @@ else
 fi
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 BOOT
+  BOOT_PIDS+=($!)
   echo "    node ${i} bootstrap started"
 done
 boot_fail=0
-wait || boot_fail=1
+# `wait` with NO ARGUMENTS returns 0 even when a background job failed, so it
+# cannot detect failure (verified on bash 3.2 and 5.x). `wait PID` does return
+# that job's real status, so wait on each one individually.
+for pid in "${BOOT_PIDS[@]}"; do
+  wait "${pid}" || boot_fail=1
+done
 for i in 0 1; do
   echo "    --- node ${i} bootstrap (tail) ---"
   tail -5 "${KEYDIR}/boot-${i}.log" | sed 's/^/      /'
@@ -256,7 +279,7 @@ fi
 say "Copying the changed g5/ files to both nodes"
 PAYLOAD=(g5/train.py g5/run.sh g5/throughput.py g5/prepare_c4.py g5/prepare-c4.sh)
 for i in 0 1; do
-  mapfile -t OPTS < <(ssh_opts_for "${i}")
+  set_opts "${i}"
   scp "${OPTS[@]}" -q "${PAYLOAD[@]}" "${OS_USER}@${IDS[$i]}:${REMOTE_REPO}/g5/"
   ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
     "chmod +x ${REMOTE_REPO}/g5/run.sh ${REMOTE_REPO}/g5/prepare-c4.sh"
@@ -271,15 +294,20 @@ md5sum "${PAYLOAD[@]}" 2>/dev/null | sed 's/^/      /' || \
 # builds run concurrently; prepare_c4.py reuses an existing verified dataset,
 # so this is a no-op on a node that already has it.
 say "Building the c4 dataset on BOTH nodes (concurrent, ~${NUM_TOKENS} tokens each)"
+PREP_PIDS=()
 for i in 0 1; do
-  mapfile -t OPTS < <(ssh_opts_for "${i}")
+  set_opts "${i}"
   ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
     "cd ${REMOTE_REPO} && NUM_TOKENS='${NUM_TOKENS}' ./g5/prepare-c4.sh" \
     > "${KEYDIR}/prep-${i}.log" 2>&1 &
+  PREP_PIDS+=($!)
 done
 prep_fail=0
-wait -n || prep_fail=1
-wait || prep_fail=1
+# `wait -n` is bash 4.3+ and on bash 3.2 fails with a usage error, which would
+# have set prep_fail=1 on EVERY run and aborted a healthy build.
+for pid in "${PREP_PIDS[@]}"; do
+  wait "${pid}" || prep_fail=1
+done
 for i in 0 1; do
   echo "    --- node ${i} prep (tail) ---"
   tail -6 "${KEYDIR}/prep-${i}.log" | sed 's/^/      /'
@@ -291,7 +319,7 @@ fi
 
 say "Verifying the dataset exists on both nodes before spending a run"
 for i in 0 1; do
-  mapfile -t OPTS < <(ssh_opts_for "${i}")
+  set_opts "${i}"
   host_data="/home/ubuntu/qwen3-g5/run${DATA_PATH#/workspace/run}"
   if ! ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
       "test -f '${host_data}.bin' && test -f '${host_data}.idx'"; then
@@ -319,18 +347,27 @@ NUM_ATTENTION_HEADS='${NUM_ATTENTION_HEADS:-}' \
 NUM_QUERY_GROUPS='${NUM_QUERY_GROUPS:-}' SEQ_LENGTH='${SEQ_LENGTH:-}' \
 MICRO_BATCH_SIZE='${MICRO_BATCH_SIZE:-}'"
 
+RUN_PIDS=()
 for i in 1 0; do
-  mapfile -t OPTS < <(ssh_opts_for "${i}")
+  set_opts "${i}"
   ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
     "cd ${REMOTE_REPO} && ${RUN_ENV} NODE_RANK=${i} ./g5/run.sh" \
     > "${KEYDIR}/run-${i}.log" 2>&1 &
+  RUN_PIDS[$i]=$!
   echo "    launched rank ${i} (${IDS[$i]})"
   [[ "${i}" -eq 1 ]] && sleep 5   # let rank 1 get as far as the rendezvous
 done
 
+# Indexed by rank, so a failure can be ATTRIBUTED rather than just flagged.
 run_fail=0
-wait || run_fail=1
-say "Both ranks exited (failure flag: ${run_fail})"
+RUN_STATUS=()
+for i in 0 1; do
+  st=0
+  wait "${RUN_PIDS[$i]}" || st=$?
+  RUN_STATUS[$i]="${st}"
+  [[ "${st}" -eq 0 ]] || run_fail=1
+done
+say "Rank exit status: rank 0 = ${RUN_STATUS[0]}, rank 1 = ${RUN_STATUS[1]}"
 for i in 0 1; do
   echo "    --- rank ${i} (last 15 lines) ---"
   tail -15 "${KEYDIR}/run-${i}.log" | sed 's/^/      /'
@@ -338,7 +375,7 @@ done
 
 # --------------------------------------------------------------- results
 say "Parsing rank 0's throughput"
-mapfile -t OPTS < <(ssh_opts_for 0)
+set_opts 0
 ssh "${OPTS[@]}" "${OS_USER}@${IDS[0]}" bash -s <<REMOTE || true
 set -u
 log=\$(ls -t /home/ubuntu/qwen3-g5/run/logs/*.log 2>/dev/null | head -1)
