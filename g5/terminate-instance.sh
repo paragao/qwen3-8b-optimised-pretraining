@@ -20,24 +20,36 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # call. Taking only $1 would terminate node 0 and leave node 1 billing
 # silently, which is the exact failure this script exists to prevent.
 IDS=("$@")
+
+# Read a KEY=VALUE out of the record file WITHOUT sourcing it. Sourcing a data
+# file executes it, which is both unnecessary and fragile: an unquoted
+# multi-id value parses as an assignment prefixing a command, dies with
+# "command not found", and under `set -e` aborts the teardown entirely --
+# leaving instances billing. This parse tolerates quoted and unquoted values
+# and never executes anything.
+_record_get() {   # key file
+  sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -1 \
+    | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
+}
+
 if [[ "${#IDS[@]}" -eq 0 ]]; then
   if [[ -f "${HERE}/.last-instance-id" ]]; then
-    # Written by launch-instance.sh as INSTANCE_IDS=... / REGION=... . The
-    # region matters: GPU capacity often forces a region other than the
-    # default, and a teardown aimed at the wrong one leaves instances running
-    # and billing.
-    # shellcheck disable=SC1091
-    source "${HERE}/.last-instance-id"
-    REGION="${REGION:-us-west-2}"
+    # Written by launch-instance.sh. The region matters: GPU capacity often
+    # forces a region other than the default, and a teardown aimed at the
+    # wrong one leaves instances running and billing.
+    _rec_region="$(_record_get REGION "${HERE}/.last-instance-id")"
+    [[ -n "${_rec_region}" ]] && REGION="${_rec_region}"
     # INSTANCE_IDS (plural) is written by current launch-instance.sh;
     # INSTANCE_ID is kept for a record file written by an older version.
-    if [[ -n "${INSTANCE_IDS:-}" ]]; then
-      # shellcheck disable=SC2206
-      IDS=(${INSTANCE_IDS})
-    elif [[ -n "${INSTANCE_ID:-}" ]]; then
-      IDS=("${INSTANCE_ID}")
+    _rec_ids="$(_record_get INSTANCE_IDS "${HERE}/.last-instance-id")"
+    if [[ -z "${_rec_ids}" ]]; then
+      _rec_ids="$(_record_get INSTANCE_ID "${HERE}/.last-instance-id")"
     fi
-    echo "Using ${HERE}/.last-instance-id: ${IDS[*]} in ${REGION}"
+    if [[ -n "${_rec_ids}" ]]; then
+      # shellcheck disable=SC2206
+      IDS=(${_rec_ids})
+    fi
+    echo "Using ${HERE}/.last-instance-id: ${IDS[*]:-<none>} in ${REGION}"
   fi
 fi
 

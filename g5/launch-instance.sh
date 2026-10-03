@@ -312,9 +312,14 @@ fi
 # Record the REGION as well as the ids: the instances are not necessarily in
 # the default region (GPU capacity often forces another), and a teardown
 # pointed at the wrong region silently leaves billing instances running.
+#
+# INSTANCE_IDS MUST BE QUOTED. Unquoted, a multi-id value parses as
+# "VAR=first second" -- an assignment prefixing the command `second` -- so any
+# reader that sources this file dies with "command not found" and, under
+# `set -e`, aborts. That broke both the teardown and the 2-node driver.
 cat > "$(dirname "${BASH_SOURCE[0]}")/.last-instance-id" <<EOF
-INSTANCE_ID=${INSTANCE_IDS[0]}
-INSTANCE_IDS=${INSTANCE_IDS[*]}
-NODES=${NODES}
-REGION=${REGION}
+INSTANCE_ID="${INSTANCE_IDS[0]}"
+INSTANCE_IDS="${INSTANCE_IDS[*]}"
+NODES="${NODES}"
+REGION="${REGION}"
 EOF

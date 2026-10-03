@@ -52,15 +52,24 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say() { printf '\n==> %s\n' "$*"; }
 
 # ---------------------------------------------------------------- instance ids
+# Parsed, not sourced: see the note in g5/terminate-instance.sh. An unquoted
+# multi-id line in the record file made `source` abort under `set -e`, which is
+# exactly how the first 2-node attempt failed.
+_record_get() {   # key file
+  sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -1 \
+    | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
+}
+
 IDS=("$@")
 if [[ "${#IDS[@]}" -eq 0 && -f "${HERE}/.last-instance-id" ]]; then
-  # shellcheck disable=SC1091
-  source "${HERE}/.last-instance-id"
-  REGION="${REGION:-us-east-1}"
-  if [[ -n "${INSTANCE_IDS:-}" ]]; then
+  _rec_region="$(_record_get REGION "${HERE}/.last-instance-id")"
+  [[ -n "${_rec_region}" ]] && REGION="${_rec_region}"
+  _rec_ids="$(_record_get INSTANCE_IDS "${HERE}/.last-instance-id")"
+  if [[ -n "${_rec_ids}" ]]; then
     # shellcheck disable=SC2206
-    IDS=(${INSTANCE_IDS})
+    IDS=(${_rec_ids})
   fi
+  echo "Read ${HERE}/.last-instance-id: ${IDS[*]:-<none>} in ${REGION}"
 fi
 if [[ "${#IDS[@]}" -ne 2 ]]; then
   echo "FATAL: need exactly 2 instance ids, got ${#IDS[@]}." >&2
@@ -104,7 +113,13 @@ for id in "${IDS[@]}"; do
     --filters "Key=InstanceIds,Values=${id}" \
     --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo None)
   echo "    ${id}: ${st}, ${az}, private ${ip}, SSM ${ping}"
-  [[ "${st}" == "running" ]] || { echo "FATAL: ${id} is ${st}" >&2; exit 1; }
+  if [[ "${st}" != "running" ]]; then
+    echo "FATAL: ${id} is '${st}' in ${REGION}." >&2
+    echo "       If that reads empty or 'None', the instance is probably in a" >&2
+    echo "       DIFFERENT region. GPU capacity often forces one. Retry with" >&2
+    echo "       REGION=<region> ./g5/finish-run-2node.sh ${IDS[*]}" >&2
+    exit 1
+  fi
   [[ "${ping}" == "Online" ]] || { echo "FATAL: ${id} SSM is ${ping}" >&2; exit 1; }
   AZS+=("${az}")
   PRIVATE+=("${ip}")
@@ -188,6 +203,54 @@ for i in 0 1; do
   ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
     'echo "    connected $(whoami)@$(hostname)"; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | sed "s/^/      GPU: /"'
 done
+
+# ------------------------------------------------------------------ bootstrap
+# g5/launch-instance.sh deliberately passes no user-data, so a freshly launched
+# instance has neither the repo nor the ~77 GB NeMo image. Without this step
+# the scp below fails on a path that does not exist. Both nodes are done
+# concurrently; each check is a no-op on an instance that already has them.
+say "Bootstrapping both nodes (repo clone + container image)"
+echo "    the image is ~77 GB, so a cold node takes ~20-30 min here"
+for i in 0 1; do
+  mapfile -t OPTS < <(ssh_opts_for "${i}")
+  ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" bash -s <<BOOT \
+    > "${KEYDIR}/boot-${i}.log" 2>&1 &
+set -euo pipefail
+REPO_DIR="${REMOTE_REPO}"
+IMAGE="${CONTAINER_IMAGE:-nvcr.io/nvidia/nemo:26.04}"
+if [ ! -d "\${REPO_DIR}/.git" ]; then
+  echo "cloning ${REPO_URL:-https://github.com/paragao/qwen3-8b-optimised-pretraining.git}"
+  mkdir -p "\$(dirname "\${REPO_DIR}")"
+  git clone --depth 1 \
+    "${REPO_URL:-https://github.com/paragao/qwen3-8b-optimised-pretraining.git}" \
+    "\${REPO_DIR}"
+else
+  echo "repo already present at \${REPO_DIR}"
+fi
+# preprocess.py must exist: prepare_c4.py lifts write_idx_file out of it.
+test -f "\${REPO_DIR}/preprocessing/preprocess.py" \
+  || { echo "FATAL: preprocessing/preprocess.py missing after clone" >&2; exit 1; }
+mkdir -p /home/ubuntu/qwen3-g5/run/logs /home/ubuntu/qwen3-g5/run/datasets
+if docker image inspect "\${IMAGE}" >/dev/null 2>&1; then
+  echo "image already present: \${IMAGE}"
+else
+  echo "pulling \${IMAGE} (this is the long pole)"
+  docker pull "\${IMAGE}"
+fi
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+BOOT
+  echo "    node ${i} bootstrap started"
+done
+boot_fail=0
+wait || boot_fail=1
+for i in 0 1; do
+  echo "    --- node ${i} bootstrap (tail) ---"
+  tail -5 "${KEYDIR}/boot-${i}.log" | sed 's/^/      /'
+done
+if [[ "${boot_fail}" -ne 0 ]]; then
+  echo "FATAL: bootstrap failed on at least one node; see the tails above." >&2
+  exit 1
+fi
 
 # ------------------------------------------------------------- copy the payload
 say "Copying the changed g5/ files to both nodes"

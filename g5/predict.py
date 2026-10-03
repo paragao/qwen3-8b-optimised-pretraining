@@ -28,6 +28,30 @@ GIB = 1024 ** 3
 # Measured on the g5.8xlarge A10G: nvidia-smi reports 23028 MiB total.
 A10G_TOTAL_BYTES = 23028 * 1024 * 1024
 
+# BUT nvidia-smi's total is NOT the budget for PyTorch allocations, and using
+# it overstated every headroom figure in this repo by 2.73 GiB until the
+# `1b2k` run OOMed and its error message exposed the difference:
+#
+#   total capacity of 22.06 GiB of which 38.25 MiB is free
+#   Including non-PyTorch memory, this process has 22.02 GiB memory in use
+#   Of the allocated memory 20.05 GiB is allocated by PyTorch
+#   and 76.86 MiB is reserved by PyTorch but unallocated
+#
+# Three deductions, all from that one message:
+A10G_TORCH_CAPACITY_BYTES = int(22.06 * GIB)   # what CUDA actually offers
+# 0.428 GiB of the nvidia-smi total is not available to CUDA at all.
+A10G_NON_TORCH_BYTES = int(1.895 * GIB)        # CUDA context, cuBLAS/cuDNN
+# ^ torch.cuda.max_memory_allocated() CANNOT SEE THIS, so it never appears in
+#   the peak this repo measures. It must be subtracted from the budget.
+A10G_TYPICAL_FRAGMENTATION_BYTES = int(0.41 * GIB)  # mean reserved-allocated
+# ^ measured across the four successful runs: 0.42, 0.49, 0.37, 0.35 GiB.
+
+# The real ceiling on the quantity train.py reports (peak ALLOCATED):
+#     torch capacity - non-PyTorch - fragmentation
+A10G_ALLOC_CEILING_BYTES = (A10G_TORCH_CAPACITY_BYTES
+                            - A10G_NON_TORCH_BYTES
+                            - A10G_TYPICAL_FRAGMENTATION_BYTES)   # ~19.76 GiB
+
 # A10G BF16 dense tensor-core peak, used only for the MFU figure.
 A10G_BF16_PEAK_TFLOPS = 125.0
 
@@ -424,7 +448,11 @@ def memory_model_three_term(param_count, arch: dict) -> dict:
         per_token=per_token, per_layer=per_layer, predicted_peak=peak,
         band=(peak * (1 - tol), peak * (1 + tol)),
         fraction_of_card=peak / A10G_TOTAL_BYTES,
-        fits=peak < A10G_TOTAL_BYTES * 0.97,
+        # Judged against the REAL ceiling on peak allocated, not nvidia-smi's
+        # total. Using the latter called `1b2k` a fit at 1.76 GiB spare; it
+        # OOMed, because the true ceiling is ~2.73 GiB lower.
+        headroom=A10G_ALLOC_CEILING_BYTES - peak,
+        fits=peak <= A10G_ALLOC_CEILING_BYTES,
     )
 
 
@@ -568,6 +596,23 @@ def self_check(param_count) -> int:
         _impl = _m["model_tflop_s"] * _m["step_time_s"]
         check(f"FLOPs {_n} within {PREDICTION_TOLERANCE:.0%}", _pred, _impl,
               _impl * PREDICTION_TOLERANCE, " TF")
+
+    print("\n--- fits/OOM verdict must match what actually happened ---")
+    # The ceiling is derived from the 1b2k OOM message, so this asserts the
+    # derivation is consistent with every observed outcome -- four runs that
+    # completed and one that did not.
+    _observed = {"smoke": True, "wider": True, "deeper": True, "1b": True,
+                 "1b2k": False}
+    for _n, _should_fit in _observed.items():
+        _m = memory_model_three_term(param_count, PROFILES[_n])
+        _ok = _m["fits"] == _should_fit
+        print(f"  [{'PASS' if _ok else 'FAIL'}] {_n:<8} predicted "
+              f"{'fits' if _m['fits'] else 'OOM':<4} observed "
+              f"{'fits' if _should_fit else 'OOM':<4} "
+              f"(peak {_m['predicted_peak'] / GIB:.2f} vs ceiling "
+              f"{A10G_ALLOC_CEILING_BYTES / GIB:.2f} GiB)")
+        if not _ok:
+            failures.append(f"{_n} fits verdict")
 
     print("\n--- geometry constraints Megatron enforces ---")
     for name, arch in PROFILES.items():
@@ -740,9 +785,14 @@ def report(param_count, target: str) -> None:
           f"({100 * m3['fraction_of_card']:.1f}% of 22.49 GiB card)")
     print(f"  +/-{PREDICTION_TOLERANCE:.0%} band            : "
           f"[{m3['band'][0] / GIB:.2f}, {m3['band'][1] / GIB:.2f}] GiB")
+    print(f"  ceiling on ALLOCATED  : {A10G_ALLOC_CEILING_BYTES / GIB:>7.2f} GiB  "
+          f"(torch capacity {A10G_TORCH_CAPACITY_BYTES / GIB:.2f}")
+    print(f"                          less non-PyTorch "
+          f"{A10G_NON_TORCH_BYTES / GIB:.2f} and fragmentation "
+          f"{A10G_TYPICAL_FRAGMENTATION_BYTES / GIB:.2f})")
     print(f"  FITS?                 : "
           f"{'YES' if m3['fits'] else 'NO -- predicted to OOM'}  "
-          f"(headroom {(A10G_TOTAL_BYTES - m3['predicted_peak']) / GIB:+.2f} GiB)")
+          f"(headroom {m3['headroom'] / GIB:+.2f} GiB)")
     print(f"  model's worst error over the 4 measured runs: "
           f"{THREE_TERM['worst_error_gib']:.4f} GiB")
 
