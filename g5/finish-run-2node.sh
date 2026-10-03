@@ -43,6 +43,10 @@ PROFILE="${AWS_PROFILE_NAME:-compute-sa-team-Administrator}"
 OS_USER="${OS_USER:-ubuntu}"
 REMOTE_REPO="${REMOTE_REPO:-/home/ubuntu/qwen3-g5/qwen3-8b-optimised-pretraining}"
 MASTER_PORT="${MASTER_PORT:-29500}"
+# Defined here rather than only inside the bootstrap heredoc, because the
+# preflight and the cleanup trap both need it locally and `set -u` would
+# otherwise abort on an unbound reference.
+CONTAINER_IMAGE="${CONTAINER_IMAGE:-nvcr.io/nvidia/nemo:26.04}"
 TRAIN_ITERS="${TRAIN_ITERS:-1000}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-16}"
 NUM_TOKENS="${NUM_TOKENS:-50000000}"
@@ -144,7 +148,24 @@ echo "    rendezvous will be ${MASTER_ADDR}:${MASTER_PORT} (private)"
 KEYDIR="$(mktemp -d)"
 chmod 700 "${KEYDIR}"
 KEY="${KEYDIR}/id_ed25519"
+RUN_LAUNCHED=0   # set to 1 once containers exist on the nodes
+
 cleanup() {
+  # Stop the REMOTE containers first. Killing the local ssh client does NOT
+  # stop them, so a Ctrl-C on a hung run used to leave both nodes with a
+  # training container holding MASTER_PORT (host networking) and the GPU --
+  # which made the NEXT run die with EADDRINUSE on the rendezvous port. This
+  # must happen BEFORE the control masters close, since it needs them.
+  # Guarded on RUN_LAUNCHED so an early failure (bad args, SSM offline) does
+  # not try to ssh to nodes that were never reached.
+  if [[ "${RUN_LAUNCHED}" -eq 1 ]]; then
+    for i in 0 1; do
+      ssh -o ControlPath="${KEYDIR}/cm-${i}" -o ConnectTimeout=10 \
+        "${OS_USER}@${IDS[$i]}" \
+        "docker ps -q --filter ancestor='${CONTAINER_IMAGE}' | xargs -r docker kill" \
+        >/dev/null 2>&1 || true
+    done
+  fi
   for i in 0 1; do
     ssh -O exit -o ControlPath="${KEYDIR}/cm-${i}" \
       "${OS_USER}@${IDS[$i]}" 2>/dev/null || true
@@ -334,6 +355,57 @@ done
 # Rank 1 starts FIRST. torchrun's static rendezvous has rank 0 host the store,
 # and rank 1 retries until it is up -- but starting rank 1 first means neither
 # side is waiting on a process that has not been launched yet.
+# ------------------------------------------------- preflight: clear stale state
+# An interrupted previous run leaves its CONTAINERS RUNNING on both nodes. The
+# local cleanup only closes the ssh control masters, and killing an ssh client
+# does not stop the remote container, so Ctrl-C on a hung run leaves behind:
+#   * rank 0's container holding MASTER_PORT (host networking) -> the next run
+#     dies with "DistNetworkError ... EADDRINUSE ... port: 29500", and rank 1
+#     then fails too because its rendezvous has no server
+#   * both containers holding their GPU, so even a free port would OOM
+# Clear it rather than reporting it: the stale container is never wanted, and
+# leaving the operator to hand-run docker kill on two nodes is the step that
+# gets skipped. Only this image is targeted, so nothing else on the box is hit.
+say "Preflight: clearing any stale run on both nodes"
+for i in 0 1; do
+  set_opts "${i}"
+  stale="$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+    "docker ps -q --filter ancestor='${CONTAINER_IMAGE}' | wc -l" 2>/dev/null || echo 0)"
+  stale="$(echo "${stale}" | tr -d '[:space:]')"
+  if [[ "${stale}" -gt 0 ]]; then
+    echo "    node ${i}: ${stale} stale container(s) from a previous run -- killing"
+    ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+      "docker ps -q --filter ancestor='${CONTAINER_IMAGE}' | xargs -r docker kill" \
+      >/dev/null 2>&1 || true
+  else
+    echo "    node ${i}: no stale containers"
+  fi
+done
+
+# Assert the port is actually free rather than assuming the kill worked: a
+# container in a wedged state can survive `docker kill`, and the failure mode
+# we are preventing is precisely a still-bound MASTER_PORT.
+for i in 0 1; do
+  set_opts "${i}"
+  for attempt in 1 2 3 4 5; do
+    in_use="$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+      "ss -ltn 2>/dev/null | grep -c ':${MASTER_PORT} ' || true" 2>/dev/null || echo 0)"
+    in_use="$(echo "${in_use}" | tr -d '[:space:]')"
+    [[ -z "${in_use}" ]] && in_use=0
+    [[ "${in_use}" -eq 0 ]] && break
+    echo "    node ${i}: ${MASTER_PORT} still bound, waiting (${attempt}/5)"
+    sleep 5
+  done
+  if [[ "${in_use}" -ne 0 ]]; then
+    echo "FATAL: node ${i} still has a listener on ${MASTER_PORT}." >&2
+    echo "       A previous run's container did not die. Inspect it with:" >&2
+    echo "         aws ssm start-session --target ${IDS[$i]} --region ${REGION}" >&2
+    echo "         docker ps ; sudo ss -ltnp | grep ${MASTER_PORT}" >&2
+    exit 1
+  fi
+  echo "    node ${i}: ${MASTER_PORT} is free"
+done
+
 say "Starting the 2-node run (GBS=${GLOBAL_BATCH_SIZE}, ${TRAIN_ITERS} iters)"
 echo "    rendezvous ${MASTER_ADDR}:${MASTER_PORT}, DATA_PATH=${DATA_PATH}"
 echo "    rank 1 starts first so the rendezvous has both ends present"
@@ -348,6 +420,7 @@ NUM_QUERY_GROUPS='${NUM_QUERY_GROUPS:-}' SEQ_LENGTH='${SEQ_LENGTH:-}' \
 MICRO_BATCH_SIZE='${MICRO_BATCH_SIZE:-}'"
 
 RUN_PIDS=()
+RUN_LAUNCHED=1   # from here on, cleanup must stop the remote containers
 for i in 1 0; do
   set_opts "${i}"
   ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \

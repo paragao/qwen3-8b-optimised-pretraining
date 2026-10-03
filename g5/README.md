@@ -518,6 +518,24 @@ at all, so a network-level hang costs ten minutes of billing rather than
 however long it takes someone to notice. Multi-node runs also default
 `NCCL_DEBUG=INFO`, because at `WARN` a transport hang prints nothing.
 
+**If a previous 2-node run was interrupted, the next one fails with
+`EADDRINUSE`.** Killing the local ssh client does not stop the *remote*
+container, so a Ctrl-C leaves rank 0's container still holding `MASTER_PORT`
+under host networking, and both containers still holding their GPU. The next
+attempt then dies at rendezvous creation with:
+
+```
+torch.distributed.DistNetworkError: The server socket has failed to listen on
+any local network address. port: 29500, ... EADDRINUSE: address already in use
+```
+
+and rank 1 fails with it, because its rendezvous has no server. This needs no
+manual recovery now: `g5/finish-run-2node.sh` kills stale containers on both
+nodes in a preflight, then **asserts** `MASTER_PORT` is actually free (retrying
+five times) and refuses to launch if a wedged container survived `docker kill`.
+Its cleanup trap also stops the remote containers on *any* exit, Ctrl-C
+included, so the state stops accumulating in the first place.
+
 Then on **each** node — identical except `NODE_RANK`, and `MASTER_ADDR` is
 rank 0's **private** address on both (the launcher prints the exact commands):
 
