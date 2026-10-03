@@ -146,6 +146,7 @@ check that the estimate can be trusted.
 | `deeper` | 12 | 1024 | 3072 | 8/2 | 2048 | 455.9 M | 7.64 GiB | 34.0% |
 | **`1b`** | **20** | **1536** | **4608** | **12/3** | **1024** | **1,009.4 M** | **16.92 GiB** | **75.2%** |
 | `deeper4k` | 12 | 1024 | 3072 | 8/2 | **4096** | 455.9 M | 7.64 GiB | 34.0% |
+| `1b2k` | 20 | 1536 | 4608 | 12/3 | **2048** | 1,009.4 M | 16.92 GiB | 75.2% |
 
 The `Static` column is analytic and excludes activations. Four profiles are
 measured; `deeper4k` is predicted but not yet run:
@@ -157,13 +158,17 @@ measured; `deeper4k` is predicted but not yet run:
 | `deeper` | 7.64 GiB | **9.66 GiB** | 10.03 GiB | 43.0% | **18,793** | **36.7** | **29.4%** |
 | **`1b`** | 16.92 GiB | **19.08 GiB** | 19.43 GiB | **84.8%** | **7,085** | 34.3 | 27.4% |
 | `deeper4k` | 7.64 GiB | not run (predicted 11.14) | — | ~50% | predicted ~17,400 | — | — |
+| `1b2k` | 16.92 GiB | not run (predicted 20.73) | — | ~92% | predicted ~6,800 | — | — |
 
 Percentages are against the A10G's **22.49 GiB total** (`nvidia-smi` reports
 23028 MiB). All four ran 0 skipped and 0 NaN iterations, so the BF16 path is stable on
 `sm_86` across 4-20 layers, hidden 1024-1536 and seq 1024-2048.
 
-`deeper4k` is `deeper` at seq 4096 — a single-variable change, and the first
-profile matching Qwen3-8B's own `seq_length`. `seq_length` does not affect the
+`deeper4k` is `deeper` at seq 4096 and `1b2k` is `1b` at seq 2048 — both
+single-variable changes, and `deeper4k` is the first profile matching
+Qwen3-8B's own `seq_length`. **2048 is the ceiling for the 1B shape** (the
+absolute limit is ~2,724 tokens, so seq 4096 at 1B would need 24.01 GiB and
+OOM); seq 4096 is only affordable on the 455.9 M geometry. `seq_length` does not affect the
 parameter count, so its static state is identical to `deeper`'s and every
 change is in activations. See
 [`results/deeper4k-prediction.md`](results/deeper4k-prediction.md).

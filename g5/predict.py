@@ -93,6 +93,18 @@ PROFILES = {
     "deeper4k": dict(num_layers=12, hidden_size=1024, ffn_hidden_size=3072,
                      num_attention_heads=8, num_query_groups=2,
                      seq_length=4096),
+    # The 1B model at seq 2048. A SINGLE-VARIABLE change from the measured
+    # `1b` -- only seq_length moves, 1024 -> 2048 -- so the difference of the
+    # two residuals is exactly 1024 x (c1 + k x layers x hidden), i.e. it
+    # measures the seq SLOPE directly. Combined with k already measured at
+    # 46.44 B/unit from the wider/1b pair, that inverts to give c1 on its own,
+    # which is the constant the current data barely constrains.
+    #
+    # 2048 is the practical ceiling for this shape: the absolute limit is ~2724
+    # tokens, so 3072 and 4096 both OOM. Predicted peak 20.6-20.7 GiB, about
+    # 92% of the card -- the thinnest margin of any profile here.
+    "1b2k": dict(num_layers=20, hidden_size=1536, ffn_hidden_size=4608,
+                 num_attention_heads=12, num_query_groups=3, seq_length=2048),
 }
 
 # Qwen3-8B itself, as a sanity anchor for the lifted formula.
@@ -304,47 +316,66 @@ def memory_model_two_point(param_count, arch: dict, cal2: dict) -> dict:
 
 
 def anchored_prediction(param_count, target: str, anchor: str = "wider") -> dict:
-    """Predict `target`'s peak by extrapolating only the num_layers delta.
+    """Predict `target` by extrapolating a SINGLE-VARIABLE change from a
+    measured profile, so static is exact and only one term is extrapolated.
 
-    Stronger than either calibration for a profile that differs from a MEASURED
-    profile in num_layers alone. Starting from the anchor's measured residual
-    and adding only `k * delta_units` means:
+    Two cases, measuring different things:
 
-      * the static term is exact (analytic, from param_count)
-      * the logits term CANCELS, because both have the same seq_length -- so
-        the prediction carries no assumption about it at all
-      * the only extrapolated quantity is the per-layer constant k
+    num_layers only (same seq_length)
+        The per-token term is identical in both and CANCELS in the difference,
+        so the pair measures the per-layer constant k with no assumption about
+        the logits term:
+            k = (resid_target - resid_anchor) / (units_target - units_anchor)
 
-    Conversely, the measurement inverts to give k directly:
-        k = (residual_target - residual_anchor) / (units_target - units_anchor)
-    which is the first clean measurement of k this repo can make.
+    seq_length only (same layers and hidden)
+        Both the per-token term and the per-layer term are linear in seq, so
+        the difference measures their SUM -- the seq slope:
+            slope = (resid_target - resid_anchor) / (seq_target - seq_anchor)
+                  = c1 + k * layers * hidden
+        With k already measured from a num_layers pair, this inverts to give c1
+        on its own, which is the constant the existing data barely constrains.
     """
     measured = {"smoke": SMOKE_MEASURED, "wider": WIDER_MEASURED,
-                "deeper": DEEPER_MEASURED}
+                "deeper": DEEPER_MEASURED, "1b": ONE_B_MEASURED}
     if anchor not in measured:
         raise SystemExit(f"FATAL: anchor {anchor!r} has no measurement")
     a, t = PROFILES[anchor], PROFILES[target]
     diffs = sorted(k for k in t if a[k] != t[k])
-    if diffs != ["num_layers"]:
+    if diffs not in (["num_layers"], ["seq_length"]):
         raise SystemExit(
-            f"FATAL: {target} differs from {anchor} in {diffs}, not num_layers "
-            "alone, so the logits term does not cancel and this anchoring is "
-            "invalid. Use the ordinary report instead."
+            f"FATAL: {target} differs from {anchor} in {diffs}. Anchoring needs "
+            "a single-variable change in num_layers or seq_length."
         )
     resid_anchor = (measured[anchor]["peak_allocated_gib"] * GIB
                     - param_count(a, VOCAB_SIZE)["total"] * 18)
-    d_units = activation_units(t) - activation_units(a)
     static = param_count(t, VOCAB_SIZE)["total"] * 18
-    # The two per-layer constants the earlier pair-fits disagree about.
-    candidates = {
-        "k=24.81 B/unit (smoke+deeper fit)": 24.81,
-        "k=80.17 B/unit (smoke+wider fit)": 80.17,
-    }
-    out = {}
-    for label, k in candidates.items():
-        out[label] = static + resid_anchor + k * d_units
-    return dict(static=static, resid_anchor=resid_anchor, d_units=d_units,
-                predictions=out, anchor=anchor)
+    mode = diffs[0]
+
+    if mode == "num_layers":
+        d = activation_units(t) - activation_units(a)
+        unit = "B per (layer x seq x hidden x batch)"
+        # The two per-layer constants the earlier pair-fits disagreed about.
+        candidates = {"k=24.81 B/unit (smoke+deeper fit)": 24.81,
+                      "k=80.17 B/unit (smoke+wider fit)": 80.17}
+        preds = {lbl: static + resid_anchor + v * d for lbl, v in candidates.items()}
+    else:
+        d = t["seq_length"] - a["seq_length"]
+        unit = "B per token (= c1 + k x layers x hidden)"
+        # Slope under the measured k, and under the least-squares k.
+        lh = t["num_layers"] * t["hidden_size"]
+        candidates = {
+            f"k measured 46.44, c1 {THREE_TERM['c1_bytes_per_token']:,.0f}":
+                THREE_TERM["c1_bytes_per_token"]
+                + THREE_TERM["k_measured_bytes_per_unit"] * lh,
+            f"k fitted 51.02, c1 {THREE_TERM['c1_bytes_per_token']:,.0f}":
+                THREE_TERM["c1_bytes_per_token"]
+                + THREE_TERM["k_bytes_per_unit"] * lh,
+        }
+        preds = {lbl: static + resid_anchor + v * d for lbl, v in candidates.items()}
+
+    return dict(static=static, resid_anchor=resid_anchor, d_units=d,
+                predictions=preds, anchor=anchor, mode=mode, unit=unit,
+                slopes=candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -626,43 +657,73 @@ def report(param_count, target: str) -> None:
     # stronger prediction: anchor on that profile's measured residual and
     # extrapolate only the layer delta, which cancels the logits term entirely.
     anchored = None
-    for _anchor in ("wider", "smoke", "deeper"):
+    for _anchor in ("1b", "wider", "deeper", "smoke"):
         if target == _anchor:
             continue
         _d = sorted(k for k in arch if PROFILES[_anchor][k] != arch[k])
-        if _d == ["num_layers"]:
+        if _d in (["num_layers"], ["seq_length"]):
             anchored = anchored_prediction(param_count, target, _anchor)
             break
     if anchored:
+        _mode = anchored["mode"]
         print()
         print(f"  --- ANCHORED on measured `{anchored['anchor']}` "
-              f"(single-variable: num_layers only) ---")
-        print(f"  This is the STRONGEST prediction available for this profile.")
-        print(f"  Both share seq_length, so the FP32 logits term cancels exactly")
-        print(f"  in the difference and is not assumed at all.")
+              f"(single-variable: {_mode} only) ---")
+        print(f"  This is the STRONGEST prediction available for this profile:")
+        print(f"  static is exact and only one term is extrapolated.")
+        if _mode == "num_layers":
+            print(f"  Both share seq_length, so the per-token term CANCELS in the")
+            print(f"  difference and is not assumed at all.")
+            _dlabel = "delta activation units"
+            _inv = "the per-layer constant k"
+            _den = f"{anchored['d_units']:,} units"
+        else:
+            print(f"  Both share layers and hidden, so the difference measures the")
+            print(f"  seq SLOPE = c1 + k x layers x hidden. With k already measured")
+            print(f"  at {THREE_TERM['k_measured_bytes_per_unit']:.2f} from a "
+                  f"num_layers pair, that inverts to give c1 ALONE --")
+            print(f"  the constant the existing data barely constrains.")
+            _dlabel = "delta seq_length"
+            _inv = "the seq slope"
+            _den = f"{anchored['d_units']:,} tokens"
         print(f"  {anchored['anchor']} measured residual : "
               f"{anchored['resid_anchor'] / GIB:>7.4f} GiB")
-        print(f"  delta activation units : {anchored['d_units']:>12,}")
+        print(f"  {_dlabel:<22} : {anchored['d_units']:>12,}")
         for label, peak in sorted(anchored["predictions"].items(),
                                   key=lambda kv: kv[1]):
-            print(f"  {label:<36} -> {peak / GIB:>6.2f} GiB "
+            print(f"  {label:<44} -> {peak / GIB:>6.2f} GiB "
                   f"({100 * peak / A10G_TOTAL_BYTES:.1f}% of card)")
         _vals = sorted(anchored["predictions"].values())
-        print(f"  DISCRIMINATING GAP     : {(_vals[-1] - _vals[0]) / GIB:>7.2f} GiB")
-        print(f"  The measurement INVERTS to give the per-layer constant:")
-        print(f"    k = (residual - {anchored['resid_anchor'] / GIB:.4f} GiB) "
-              f"/ {anchored['d_units']:,} units")
+        print(f"  spread between them    : {(_vals[-1] - _vals[0]) / GIB:>7.2f} GiB")
+        print(f"  The measurement INVERTS to give {_inv}:")
+        print(f"    (residual - {anchored['resid_anchor'] / GIB:.4f} GiB) / {_den}")
+        if _mode == "seq_length":
+            _lh = arch["num_layers"] * arch["hidden_size"]
+            print(f"    then c1 = slope - "
+                  f"{THREE_TERM['k_measured_bytes_per_unit']:.2f} x {_lh:,} "
+                  f"= slope - "
+                  f"{THREE_TERM['k_measured_bytes_per_unit'] * _lh:,.0f} B/token")
         # These are the bands actually worth scoring against for this profile,
         # so print them here rather than leaving them in a scratch script.
         _av = sorted(anchored["predictions"].items(), key=lambda kv: kv[1])
         _agap = (_av[-1][1] - _av[0][1]) / GIB
         _atol = min(0.15, 0.45 * _agap)
+        if _agap < 0.30:
+            # Bands this close cannot be a meaningful pass/fail: the fit's own
+            # worst error is 0.0787 GiB, comparable to the gap itself.
+            print(f"  NOTE the two candidates are only {_agap:.2f} GiB apart, which is")
+            print(f"  within the model's own worst error ({THREE_TERM['worst_error_gib']:.4f} GiB). "
+                  f"They do NOT")
+            print(f"  discriminate. The value of this run is the MEASUREMENT below,")
+            print(f"  not a pass/fail against either candidate.")
         print(f"  ANCHORED THRESHOLDS (tolerance +/-{_atol:.2f} GiB):")
         for _i, (_lbl, _pk) in enumerate(_av, start=1):
             print(f"    A{_i} peak inside [{_pk / GIB - _atol:.2f}, "
                   f"{_pk / GIB + _atol:.2f}] GiB -> {_lbl}")
-        print(f"    A3 outside BOTH without an OOM -> neither constant is right;")
-        print(f"       the measured k IS the result, not a refutation.")
+        _what = ("the per-layer constant k" if _mode == "num_layers"
+                 else "the seq slope, and c1 from it")
+        print(f"    A3 outside BOTH without an OOM -> neither candidate is right;")
+        print(f"       {_what} IS the result, not a refutation.")
 
     print()
     print("  --- BEST AVAILABLE MODEL: three-term, fitted over all 4 runs ---")
