@@ -160,6 +160,30 @@ C4_MEASURED = dict(
     nan_iterations=0,
 )
 
+# ---------------------------------------------------------------------------
+# Measured `1b` run (2026-10-03 09:12) on REAL c4. The FOURTH point, and the
+# first that is a single-variable change from another measured profile -- only
+# num_layers differs from `wider`, so the logits term cancels in the pair and
+# the per-layer constant is measured rather than fitted.
+# Landed outside both predicted bands (A3), which the prediction anticipated.
+#   g5/results/run-20261003-101233.log
+# ---------------------------------------------------------------------------
+ONE_B_MEASURED = dict(
+    peak_allocated_gib=19.08,
+    peak_reserved_gib=19.43,
+    step_time_s=1.156,
+    tokens_per_step=8192,
+    tokens_per_s=7085,
+    model_tflop_s=34.3,
+    params_m=1009.4,
+    skipped_iterations=0,
+    nan_iterations=0,
+    loss_first=12.2330,
+    loss_last=7.8027,
+    iterations=50,
+    real_data=True,
+)
+
 # train.py defaults: micro_batch_size=1, global_batch_size=8 (lines 204-205).
 # So a global step is 8 gradient-accumulation micro-steps, and peak activation
 # memory is that of a SINGLE micro-batch of size 1.
@@ -498,6 +522,17 @@ def report(param_count, target: str) -> None:
         print(f"  The measurement INVERTS to give the per-layer constant:")
         print(f"    k = (residual - {anchored['resid_anchor'] / GIB:.4f} GiB) "
               f"/ {anchored['d_units']:,} units")
+        # These are the bands actually worth scoring against for this profile,
+        # so print them here rather than leaving them in a scratch script.
+        _av = sorted(anchored["predictions"].items(), key=lambda kv: kv[1])
+        _agap = (_av[-1][1] - _av[0][1]) / GIB
+        _atol = min(0.15, 0.45 * _agap)
+        print(f"  ANCHORED THRESHOLDS (tolerance +/-{_atol:.2f} GiB):")
+        for _i, (_lbl, _pk) in enumerate(_av, start=1):
+            print(f"    A{_i} peak inside [{_pk / GIB - _atol:.2f}, "
+                  f"{_pk / GIB + _atol:.2f}] GiB -> {_lbl}")
+        print(f"    A3 outside BOTH without an OOM -> neither constant is right;")
+        print(f"       the measured k IS the result, not a refutation.")
 
     print()
     print("  --- predicted throughput ---")
@@ -661,7 +696,7 @@ def score(param_count) -> int:
 
 
 def form_test(param_count) -> int:
-    """Test whether a 2-parameter linear residual model fits all THREE points.
+    """Test whether a 2-parameter linear residual model fits all FOUR points.
 
     `wider` appeared to confirm the decomposed model. `deeper` landed outside
     both predicted bands, which moves the question from "which constants" to
@@ -677,10 +712,11 @@ def form_test(param_count) -> int:
         "smoke": SMOKE_MEASURED["peak_allocated_gib"],
         "wider": WIDER_MEASURED["peak_allocated_gib"],
         "deeper": DEEPER_MEASURED["peak_allocated_gib"],
+        "1b": ONE_B_MEASURED["peak_allocated_gib"],
     }
     pts = {}
     print("=" * 74)
-    print("FORM TEST: does one 2-parameter model fit all three measured points?")
+    print("FORM TEST: does one 2-parameter model fit all four measured points?")
     print("=" * 74)
     print("\n  --- measured residuals over static @18 B/param ---")
     for name, peak in measured.items():
@@ -702,54 +738,129 @@ def form_test(param_count) -> int:
         return ((A["resid"] * B["u"] - B["resid"] * A["u"]) / det,
                 (A["L"] * B["resid"] - B["L"] * A["resid"]) / det)
 
-    print("\n  --- leave-one-out: fit on two points, predict the third ---")
+    print("\n  --- every PAIR fitted exactly, then used to predict the others ---")
+    import itertools as _it
     names = list(pts)
     worst, negative_beta = 0.0, False
-    for held in names:
-        pair = [n for n in names if n != held]
-        sol = solve(*pair)
+    for a, b in _it.combinations(names, 2):
+        sol = solve(a, b)
         if sol is None:
-            print(f"  fit on {pair} is singular")
+            print(f"  fit {a}+{b} is singular")
             continue
         alpha, beta = sol
-        H = pts[held]
-        pred = alpha * H["L"] + beta * H["u"]
-        err = (pred - H["resid"]) / GIB
-        worst = max(worst, abs(err))
         if beta < 0:
             negative_beta = True
         flag = "  <-- NEGATIVE, physically impossible" if beta < 0 else ""
-        print(f"  fit {pair[0]:<6}+{pair[1]:<7} alpha={alpha:7.4f} "
+        print(f"  fit {a:<6}+{b:<7} alpha={alpha:7.4f} "
               f"beta={beta:7.2f} B/unit{flag}")
-        print(f"      predicts {held:<7} {pred / GIB:6.4f} GiB vs measured "
-              f"{H['resid'] / GIB:6.4f}  ERROR {err:+.4f} GiB "
-              f"({100 * err / (H['resid'] / GIB):+.1f}%)")
+        for held in names:
+            if held in (a, b):
+                continue
+            H = pts[held]
+            pred = alpha * H["L"] + beta * H["u"]
+            err = (pred - H["resid"]) / GIB
+            worst = max(worst, abs(err))
+            print(f"      predicts {held:<7} {pred / GIB:6.4f} GiB vs measured "
+                  f"{H['resid'] / GIB:6.4f}  ERROR {err:+.4f} GiB "
+                  f"({100 * err / (H['resid'] / GIB):+.1f}%)")
 
-    print(f"\n  worst leave-one-out error : {worst:.4f} GiB")
+    print(f"\n  worst pairwise extrapolation error : {worst:.4f} GiB")
     if negative_beta:
         print("  one fit needs a NEGATIVE bytes-per-activation-unit, which no")
         print("  physical allocation can have. That alone refutes the form.")
 
-    print("\n  --- why the form was never testable from these profiles ---")
-    for a, b in (("smoke", "wider"), ("smoke", "deeper"), ("wider", "deeper")):
+    print("\n  --- which pairs co-vary, and which do not ---")
+    for a, b in _it.combinations(names, 2):
         A, B = pts[a]["arch"], pts[b]["arch"]
         diffs = [k for k in ("num_layers", "hidden_size", "seq_length")
                  if A[k] != B[k]]
+        tag = "  <-- SINGLE VARIABLE" if len(diffs) == 1 else ""
         print(f"  {a:<7} -> {b:<7} co-varies {len(diffs)}: "
-              + ", ".join(f"{k} {A[k]}->{B[k]}" for k in diffs))
-    print("  No pair is a single-variable change, so a model fitted to one pair")
-    print("  has no basis for extrapolating. The apparent success on `wider`")
-    print("  was interpolation luck, not a validated form.")
+              + ", ".join(f"{k} {A[k]}->{B[k]}" for k in diffs) + tag)
+    print("  The first three profiles co-vary at least two parameters in every")
+    print("  pair, so no fit among them could isolate a term, and `wider`")
+    print("  appearing to confirm the two-term model was interpolation luck.")
+    print("  `1b` was chosen to fix exactly that: it differs from `wider` in")
+    print("  num_layers alone.")
+
+    print("\n  --- k MEASURED from the wider/1b single-variable pair ---")
+    # wider and 1b differ ONLY in num_layers and share seq_length, so the
+    # logits term is identical in both and cancels in the difference. This is
+    # a measurement, not a fit: no assumption about the logits term enters it.
+    _w, _b = pts["wider"], pts["1b"]
+    _du = _b["u"] - _w["u"]
+    _k = (_b["resid"] - _w["resid"]) / _du
+    print(f"  delta residual : {(_b['resid'] - _w['resid']) / GIB:.4f} GiB over "
+          f"{_du:,} units")
+    print(f"  k              : {_k:.2f} B per (layer x seq x hidden x batch)")
+    print(f"  the two pair-fits predicted 24.81 and 80.17, so BOTH were wrong")
+    print(f"  and the measured value sits between them.")
+
+    print("\n  --- with k known, what is left over per profile ---")
+    for n in pts:
+        _c = pts[n]["resid"] - _k * pts[n]["u"]
+        _full = logits_bytes(pts[n]["arch"])
+        print(f"  {n:<7} seq={pts[n]['arch']['seq_length']:<5} leftover "
+              f"{_c / GIB:7.4f} GiB = {_c / _full:5.2f}x a full FP32 logits copy")
+    print("  smoke and wider/1b share seq_length yet differ by 0.1647 GiB, so")
+    print("  this leftover is NOT a single constant -- hence the third term below.")
+
+    print("\n  --- three-term model: resid = c0 + c1*seq + k*units ---")
+    print("  3 parameters against 4 measured points, so 1 degree of freedom.")
+
+    def _solve3(rows, rhs):
+        m = [list(r) + [v] for r, v in zip(rows, rhs)]
+        for i in range(3):
+            piv = max(range(i, 3), key=lambda r: abs(m[r][i]))
+            m[i], m[piv] = m[piv], m[i]
+            if abs(m[i][i]) < 1e-30:
+                return None
+            for r in range(3):
+                if r == i:
+                    continue
+                f = m[r][i] / m[i][i]
+                for c in range(i, 4):
+                    m[r][c] -= f * m[i][c]
+        return [m[i][3] / m[i][i] for i in range(3)]
+
+    _rows = [[1.0, float(pts[n]["arch"]["seq_length"]), float(pts[n]["u"])]
+             for n in pts]
+    _y = [pts[n]["resid"] for n in pts]
+    _AtA = [[sum(_rows[r][i] * _rows[r][j] for r in range(len(_rows)))
+             for j in range(3)] for i in range(3)]
+    _Aty = [sum(_rows[r][i] * _y[r] for r in range(len(_rows))) for i in range(3)]
+    _sol = _solve3(_AtA, _Aty)
+    if _sol:
+        c0, c1, k2 = _sol
+        print(f"  c0 fixed       : {c0 / GIB:.4f} GiB")
+        print(f"  c1 per token   : {c1:,.0f} B/token = "
+              f"{100 * c1 / (VOCAB_SIZE * 4):.1f}% of a full FP32 vocab logits row")
+        print(f"  k  per unit    : {k2:.2f} B/unit")
+        _worst3 = 0.0
+        for n in pts:
+            pred = c0 + c1 * pts[n]["arch"]["seq_length"] + k2 * pts[n]["u"]
+            err = (pred - pts[n]["resid"]) / GIB
+            _worst3 = max(_worst3, abs(err))
+            print(f"    {n:<7} predicted {pred / GIB:6.4f} measured "
+                  f"{pts[n]['resid'] / GIB:6.4f}  err {err:+.4f} GiB "
+                  f"({100 * err * GIB / (pts[n]['peak'] * GIB):+.2f}% of peak)")
+        print(f"  worst error    : {_worst3:.4f} GiB, against the two-term "
+              f"model's {worst:.4f} GiB")
+        print("  CAVEAT: c1 is pinned by a SINGLE point at seq 2048 (`deeper`).")
+        print("  The other three all have seq 1024, so leaving `deeper` out makes")
+        print("  the fit singular. This model is suggestive, not validated -- a")
+        print("  second sequence length at fixed layers and hidden would settle it.")
 
     print("\n  --- what IS validated: the FLOP model ---")
     for name, m in (("smoke", SMOKE_MEASURED), ("wider", WIDER_MEASURED),
-                    ("deeper", DEEPER_MEASURED)):
+                    ("deeper", DEEPER_MEASURED), ("1b", ONE_B_MEASURED)):
         pred = flops_per_step(param_count, PROFILES[name])["total"]
         implied = m["model_tflop_s"] * 1e12 * m["step_time_s"]
         print(f"  {name:<7} predicted {pred / 1e12:6.2f} TFLOP  "
               f"implied {implied / 1e12:6.2f}  err {100 * (pred - implied) / implied:+6.2f}%")
     print("  Calibrated on smoke alone and never refitted, it holds to within")
-    print("  0.04% across changes in layers, hidden_size AND seq_length.")
+    print("  0.10% across changes in layers, hidden_size AND seq_length, over a")
+    print("  3.9x span in FLOPs per step.")
     print("=" * 74)
     # Non-zero: the memory form IS refuted, and this should be visible in CI.
     return 1 if worst > 0.35 else 0

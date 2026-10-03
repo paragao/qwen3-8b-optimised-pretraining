@@ -146,7 +146,7 @@ check that the estimate can be trusted.
 | `deeper` | 12 | 1024 | 3072 | 8/2 | 2048 | 455.9 M | 7.64 GiB | 34.0% |
 | **`1b`** | **20** | **1536** | **4608** | **12/3** | **1024** | **1,009.4 M** | **16.92 GiB** | **75.2%** |
 
-The `Static` column is analytic and excludes activations. All three profiles
+The `Static` column is analytic and excludes activations. All four profiles
 are now measured:
 
 | Profile | Static | Measured peak alloc | Measured reserved | % of 22.49 GiB total | Median tok/s | MODEL_TFLOP/s | MFU |
@@ -154,17 +154,27 @@ are now measured:
 | `smoke` | 6.02 GiB | **6.84 GiB** | 7.26 GiB | 30.4% | **24,757** | 30.9 | 24.7% |
 | `wider` | 10.55 GiB | **11.76 GiB** | 12.25 GiB | 52.3% | **14,357** | 34.9 | 27.9% |
 | `deeper` | 7.64 GiB | **9.66 GiB** | 10.03 GiB | 43.0% | **18,793** | **36.7** | **29.4%** |
-| `1b` | 16.92 GiB | not run (predicted 18.64-19.77) | — | 83-88% | predicted 6,378-7,843 | — | — |
+| **`1b`** | 16.92 GiB | **19.08 GiB** | 19.43 GiB | **84.8%** | **7,085** | 34.3 | 27.4% |
 
 Percentages are against the A10G's **22.49 GiB total** (`nvidia-smi` reports
-23028 MiB). All three ran 0 skipped and 0 NaN iterations, so the BF16 path is
-stable on `sm_86` across 4-12 layers, hidden 1024-1536 and seq 1024-2048.
+23028 MiB). All four ran 0 skipped and 0 NaN iterations, so the BF16 path is stable on
+`sm_86` across 4-20 layers, hidden 1024-1536 and seq 1024-2048.
 
 Two results worth reading off that table:
 
-**Sequence length buys more efficiency than width.** `deeper` is the *most*
-efficient of the three (36.7 MODEL_TFLOP/s, 29.4% MFU) at the *narrowest*
-width, having doubled seq instead. Doubling seq beat a 50% hidden increase.
+**Efficiency comes from GEMM shape, not from how many GEMMs there are.** Three
+cleanly separated effects across the four runs:
+
+| change | effect on MODEL_TFLOP/s |
+|---|---|
+| hidden 1024 -> 1536 (`smoke` -> `wider`) | **+12.9%** (30.9 -> 34.9) |
+| seq 1024 -> 2048 (`smoke` -> `deeper`) | **+18.8%** (30.9 -> 36.7) |
+| layers 6 -> 20 at fixed width and seq (`wider` -> `1b`) | **−1.7%** (34.9 -> 34.3) |
+
+That last row is a clean attribution, because `wider` -> `1b` changes
+`num_layers` and nothing else. **Depth does not buy efficiency.** It was
+predicted to help (more independent work for the scheduler to overlap) and it
+did not — see [`results/1b-prediction.md`](results/1b-prediction.md), R4.
 
 **Parameter count is not a proxy for step cost.** `deeper` has fewer
 parameters than `wider` (455.9 M vs 629.5 M) but does 1.605x the FLOPs per
@@ -184,10 +194,14 @@ NUM_LAYERS=20 HIDDEN_SIZE=1536 FFN_HIDDEN_SIZE=4608 \
   TRAIN_ITERS=50 ./g5/finish-run.sh
 ```
 
-**1,009,385,472 parameters**, 16.92 GiB static (75.2% of the card), predicted to
-peak at **18.64-19.77 GiB (83-88%)**. It should fit with ~2.7 GiB spare, but it
-is by far the tightest profile — `wider`, the previous largest, peaked at 52%.
-**Treat an OOM as a real possibility.** Fallback:
+**1,009,385,472 parameters. Measured: 19.08 GiB peak allocated (84.8% of the
+card), 7,085 tok/s, 0 skipped and 0 NaN iterations over 50 steps on real c4.**
+It fits with **3.41 GiB spare**. Predicted 18.64-19.77 GiB beforehand, so the
+measurement landed inside the bracket though outside both individual bands.
+
+It is by far the tightest profile — `wider`, the previous largest, peaked at
+52%. If you push past 1B, the fallback shape trades aspect ratio for activation
+memory:
 
 ```bash
 NUM_LAYERS=8 HIDDEN_SIZE=2048 FFN_HIDDEN_SIZE=6144 \
@@ -228,26 +242,55 @@ Full prediction and thresholds: [`results/1b-prediction.md`](results/1b-predicti
 
 ### Sizing an untested profile: measure it
 
-`g5/predict.py --profile <name>` predicts memory, but **its memory model is
-refuted** and its prediction should be treated as a rough bound, not a number:
+`g5/predict.py --profile <name>` predicts memory. The **two-term** model it
+started with is refuted, but the `1b` run measured the term that was missing,
+and a three-term form now fits every measurement closely:
 
 ```bash
-python3 g5/predict.py --form-test   # shows why; exits 1 by design
+python3 g5/predict.py --form-test   # the whole story; exits 1 by design
 ```
 
-The flat "+14% over static" heuristic is definitely wrong — `wider` refuted it.
-But the decomposed replacement is *also* wrong: it predicted `deeper` at
-10.21-10.52 GiB against a measured 9.66, outside both bands, and no model of
-that form fits all three points (one leave-one-out fit needs a *negative*
-bytes-per-activation-unit). The root cause is that none of the three profiles
-is a single-variable change from another, so a model fitted to two of them has
-no basis for extrapolation.
+The flat "+14% over static" heuristic is wrong — `wider` refuted it. The
+decomposed two-term replacement is *also* wrong: it predicted `deeper` at
+10.21-10.52 GiB against a measured 9.66, and across the four points its worst
+pairwise extrapolation is 2.34 GiB, with one pair even requiring a *negative*
+bytes-per-activation-unit. The root cause was that no pair among the first
+three profiles was a single-variable change, so nothing could isolate a term.
 
-Empirically, across the three measured shapes, peak allocated ran **11-26%
-above** the 18 B/param static figure. Treat 18 B/param as a floor, budget
-generously, and measure a new shape rather than predicting it. A `seq` sweep at
-fixed layers and hidden, plus a `layers` sweep at fixed seq and hidden, would
-settle the form — about 12 runs of under a minute each.
+**`1b` fixed that.** It differs from the measured `wider` in `num_layers`
+alone, and both share `seq_length`, so the logits term cancels in the
+difference and the per-layer constant is **measured, not fitted**:
+
+```
+k = (2.1589 − 1.2065) GiB / 22,020,096 units = 46.44 B/unit
+```
+
+Both earlier fits were wrong in opposite directions (24.81 and 80.17 bracket
+it). With `k` known, the leftover is *not* a single constant — `smoke` and
+`wider`/`1b` differ by 0.165 GiB at the same `seq_length` — so a third term is
+needed:
+
+| term | fitted over all four runs |
+|---|---|
+| fixed | 0.5366 GiB |
+| per token | 149,765 B/token (**24.6%** of a full FP32 vocab logits row) |
+| per `layers x seq x hidden x batch` | 51.02 B/unit |
+
+Worst error **0.0787 GiB**, under 1% of peak on every profile. The per-token
+coefficient landing at a quarter of a full FP32 logits row suggests Megatron
+does not hold the whole logits tensor resident at peak — a hypothesis the
+number is consistent with, not a demonstration.
+
+**Still not validated**, and the weak direction is specific: three parameters
+against four points leaves one degree of freedom, and the per-token coefficient
+is pinned by a **single** point (`deeper` is the only profile at seq 2048;
+dropping it makes the fit singular). A `seq` sweep at fixed layers and hidden —
+`smoke` geometry at 512, 2048, 4096 — is three sub-minute runs and would settle
+it.
+
+For sizing now: peak allocated ran **11-26% above** the 18 B/param static
+figure across the four measured shapes. Treat 18 B/param as a floor and budget
+to the top of that range.
 
 **The throughput model, by contrast, is validated.** Calibrated on `smoke`
 alone and never refitted, it predicts FLOPs per step to within **0.04%** on all
@@ -258,6 +301,7 @@ three profiles, across changes in layers, hidden size and sequence length:
 | `smoke` | 10.22 TFLOP | 10.23 | −0.04% |
 | `wider` | 19.94 TFLOP | 19.93 | +0.04% |
 | `deeper` | 31.99 TFLOP | 32.00 | −0.03% |
+| `1b` | 39.69 TFLOP | 39.65 | +0.10% |
 
 All three keep `head_dim` at 128 and the GQA ratio at 4:1, as in Qwen3-8B.
 
