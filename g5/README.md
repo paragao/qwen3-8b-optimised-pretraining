@@ -145,9 +145,10 @@ check that the estimate can be trusted.
 | `wider` | 6 | 1536 | 4608 | 12/3 | 1024 | 629.5 M | 10.55 GiB | 46.9% |
 | `deeper` | 12 | 1024 | 3072 | 8/2 | 2048 | 455.9 M | 7.64 GiB | 34.0% |
 | **`1b`** | **20** | **1536** | **4608** | **12/3** | **1024** | **1,009.4 M** | **16.92 GiB** | **75.2%** |
+| `deeper4k` | 12 | 1024 | 3072 | 8/2 | **4096** | 455.9 M | 7.64 GiB | 34.0% |
 
-The `Static` column is analytic and excludes activations. All four profiles
-are now measured:
+The `Static` column is analytic and excludes activations. Four profiles are
+measured; `deeper4k` is predicted but not yet run:
 
 | Profile | Static | Measured peak alloc | Measured reserved | % of 22.49 GiB total | Median tok/s | MODEL_TFLOP/s | MFU |
 |---|---|---|---|---|---|---|---|
@@ -155,10 +156,17 @@ are now measured:
 | `wider` | 10.55 GiB | **11.76 GiB** | 12.25 GiB | 52.3% | **14,357** | 34.9 | 27.9% |
 | `deeper` | 7.64 GiB | **9.66 GiB** | 10.03 GiB | 43.0% | **18,793** | **36.7** | **29.4%** |
 | **`1b`** | 16.92 GiB | **19.08 GiB** | 19.43 GiB | **84.8%** | **7,085** | 34.3 | 27.4% |
+| `deeper4k` | 7.64 GiB | not run (predicted 11.14) | — | ~50% | predicted ~17,400 | — | — |
 
 Percentages are against the A10G's **22.49 GiB total** (`nvidia-smi` reports
 23028 MiB). All four ran 0 skipped and 0 NaN iterations, so the BF16 path is stable on
 `sm_86` across 4-20 layers, hidden 1024-1536 and seq 1024-2048.
+
+`deeper4k` is `deeper` at seq 4096 — a single-variable change, and the first
+profile matching Qwen3-8B's own `seq_length`. `seq_length` does not affect the
+parameter count, so its static state is identical to `deeper`'s and every
+change is in activations. See
+[`results/deeper4k-prediction.md`](results/deeper4k-prediction.md).
 
 Two results worth reading off that table:
 
@@ -288,9 +296,26 @@ dropping it makes the fit singular). A `seq` sweep at fixed layers and hidden �
 `smoke` geometry at 512, 2048, 4096 — is three sub-minute runs and would settle
 it.
 
-For sizing now: peak allocated ran **11-26% above** the 18 B/param static
-figure across the four measured shapes. Treat 18 B/param as a floor and budget
-to the top of that range.
+The three-term model is what `predict.py --profile <name>` now reports, with a
+±5% band. It reproduces all four measured runs to within 0.93% of peak.
+
+**A caution on what ±5% of peak actually tests.** Static state (18 B/param) is
+exact analytic arithmetic and is 75-89% of peak, so a ±5% band on *peak* allows
+a ±42-44% error in the *residual* — the only part the model estimates.
+`--self-check` reports the sensitivity directly: the per-token coefficient could
+be wrong by **±53%** and still pass every assertion, because the largest
+`seq_length` measured so far is 2048, where that term is at most 0.29 GiB. A
++20% error in it was mutation-tested and survives. The per-unit constant is
+tighter at ±10%, and is independently *measured* at 46.44 by the `wider`/`1b`
+pair.
+
+That is what `deeper4k` is for: at seq 4096 the per-token term doubles to 0.57
+GiB, and two candidate mechanisms for it separate by 1.75 GiB — disjoint even
+at ±5%.
+
+For sizing without a model: peak allocated ran **11-26% above** the 18 B/param
+static figure across the four measured shapes. Treat 18 B/param as a floor and
+budget to the top of that range.
 
 **The throughput model, by contrast, is validated.** Calibrated on `smoke`
 alone and never refitted, it predicts FLOPs per step to within **0.04%** on all

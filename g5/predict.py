@@ -77,6 +77,22 @@ PROFILES = {
     # NUM_ATTENTION_HEADS=16 NUM_QUERY_GROUPS=4 (1.0082B, ~18.7 GiB worst case).
     "1b": dict(num_layers=20, hidden_size=1536, ffn_hidden_size=4608,
                num_attention_heads=12, num_query_groups=3, seq_length=1024),
+    # `deeper` geometry at seq 4096. A SINGLE-VARIABLE change from the measured
+    # `deeper` -- only seq_length moves, 2048 -> 4096 -- which is the sweep the
+    # three-term model needs: its per-token coefficient is currently pinned by
+    # `deeper` alone, since every other measured profile is at seq 1024.
+    #
+    # It also discriminates a mechanism. If the full FP32 vocab logits were
+    # resident at peak, that term alone would be 2.32 GiB at seq 4096; the
+    # measured per-token coefficient says only ~24.6% of it is. The two
+    # hypotheses predict 11.14 and 12.89 GiB, disjoint even at +/-5%.
+    #
+    # And it is the first profile matching Qwen3-8B's own seq_length of 4096.
+    # Note seq_length does not change the parameter count, so this is still a
+    # 455.9 M model -- the cost is entirely in activations.
+    "deeper4k": dict(num_layers=12, hidden_size=1024, ffn_hidden_size=3072,
+                     num_attention_heads=8, num_query_groups=2,
+                     seq_length=4096),
 }
 
 # Qwen3-8B itself, as a sanity anchor for the lifted formula.
@@ -331,6 +347,56 @@ def anchored_prediction(param_count, target: str, anchor: str = "wider") -> dict
                 predictions=out, anchor=anchor)
 
 
+# ---------------------------------------------------------------------------
+# The three-term residual model, fitted by least squares over ALL FOUR measured
+# runs (smoke, wider, deeper, 1b). Derived in form_test(); these constants are
+# the output of that fit, recorded so report() can use the best available model
+# rather than one of the two refuted two-term calibrations.
+#
+#     residual = C0 + C1 * seq_length + K * (layers * seq * hidden * batch)
+#
+# Worst error across the four: 0.0787 GiB, under 1% of peak everywhere.
+#
+# K is the only constant that is MEASURED rather than fitted: the wider/1b pair
+# differs in num_layers alone and shares seq_length, so the per-token term
+# cancels in the difference and gives 46.44 B/unit directly. The least-squares
+# value (51.02) is close to it, which is mild corroboration.
+#
+# C1 IS THE WEAK ONE. It is pinned by a single point, because `deeper` is the
+# only measured profile at seq 2048 and all three others are at seq 1024 --
+# drop `deeper` and the fit goes singular. The `deeper4k` profile exists to fix
+# exactly this.
+THREE_TERM = dict(
+    c0_bytes=0.5366 * GIB,
+    c1_bytes_per_token=149_765.0,
+    k_bytes_per_unit=51.02,
+    k_measured_bytes_per_unit=46.44,   # from the wider/1b pair, no fitting
+    worst_error_gib=0.0787,
+    fitted_over=("smoke", "wider", "deeper", "1b"),
+)
+
+# The operator's accepted tolerance for memory and FLOP predictions.
+PREDICTION_TOLERANCE = 0.05
+
+
+def memory_model_three_term(param_count, arch: dict) -> dict:
+    """Predict peak allocated memory with the three-term measured model."""
+    counts = param_count(arch, VOCAB_SIZE)
+    static = counts["total"] * 18
+    fixed = THREE_TERM["c0_bytes"]
+    per_token = THREE_TERM["c1_bytes_per_token"] * arch["seq_length"]
+    per_layer = THREE_TERM["k_bytes_per_unit"] * activation_units(arch)
+    peak = static + fixed + per_token + per_layer
+    tol = PREDICTION_TOLERANCE
+    return dict(
+        params=counts["total"], static=static, fixed=fixed,
+        per_token=per_token, per_layer=per_layer, predicted_peak=peak,
+        band=(peak * (1 - tol), peak * (1 + tol)),
+        fraction_of_card=peak / A10G_TOTAL_BYTES,
+        fits=peak < A10G_TOTAL_BYTES * 0.97,
+    )
+
+
 def flops_per_step(param_count, arch: dict) -> dict:
     """Model FLOPs for one optimizer step.
 
@@ -407,6 +473,70 @@ def self_check(param_count) -> int:
         check(f"two-point {name} peak", got["predicted_peak"] / GIB,
               measured["peak_allocated_gib"], 0.01, " GiB")
     check("two-point logits fraction", cal2["logits_fraction"], 0.8660, 0.0005)
+
+    print("\n--- three-term model reproduces EVERY measured run within tolerance ---")
+    # The operator accepts +/-5% on memory and FLOP predictions. This asserts
+    # the shipped model actually meets that bar on all four measurements.
+    #
+    # BUT NOTE the band this gives on the part of the prediction that is
+    # actually modelled. Static state (18 B/param) is exact analytic arithmetic
+    # and is 75-89% of peak, so +/-5% of PEAK permits a +/-42-44% error in the
+    # RESIDUAL -- the only part the model estimates. A 20% error in the
+    # per-token coefficient passes this check comfortably. So the residual is
+    # asserted separately below, at a tolerance that reflects the real fit.
+    _meas = {"smoke": SMOKE_MEASURED, "wider": WIDER_MEASURED,
+             "deeper": DEEPER_MEASURED, "1b": ONE_B_MEASURED}
+    for _n, _m in _meas.items():
+        _got = memory_model_three_term(param_count, PROFILES[_n])["predicted_peak"] / GIB
+        _want = _m["peak_allocated_gib"]
+        _static = param_count(PROFILES[_n], VOCAB_SIZE)["total"] * 18 / GIB
+        _resid = _want - _static
+        check(f"three-term {_n} peak within {PREDICTION_TOLERANCE:.0%}", _got, _want,
+              _want * PREDICTION_TOLERANCE, " GiB")
+        print(f"         ({100 * _static / _want:.0f}% of that peak is exact static; "
+              f"the {PREDICTION_TOLERANCE:.0%} band is "
+              f"+/-{100 * _want * PREDICTION_TOLERANCE / _resid:.0f}% of the residual)")
+
+    print("\n--- and the RESIDUAL itself, which is the only modelled part ---")
+    # 0.15 GiB is just under 2x the fit's worst error (0.0787 GiB).
+    for _n, _m in _meas.items():
+        _arch = PROFILES[_n]
+        _static = param_count(_arch, VOCAB_SIZE)["total"] * 18
+        _m3 = memory_model_three_term(param_count, _arch)
+        _got = (_m3["predicted_peak"] - _static) / GIB
+        _want = _m["peak_allocated_gib"] - _static / GIB
+        check(f"residual {_n}", _got, _want, 0.15, " GiB")
+
+    print("\n--- SENSITIVITY: how far could each constant drift undetected? ---")
+    # Honest accounting rather than a check that looks protective and is not.
+    # Mutation-tested: a +20% error in c1 passes every assertion above, because
+    # c1 x seq is only 0.14-0.29 GiB at the sequence lengths measured so far.
+    _c1 = THREE_TERM["c1_bytes_per_token"]
+    _max_seq = max(PROFILES[n]["seq_length"] for n in _meas)
+    _c1_slack = 0.15 * GIB / _max_seq
+    print(f"  c1 = {_c1:,.0f} B/token could be wrong by "
+          f"+/-{_c1_slack:,.0f} B/token (+/-{100 * _c1_slack / _c1:.0f}%)")
+    print(f"     and still pass, because the largest measured seq_length is "
+          f"{_max_seq} so the")
+    print(f"     term is at most {_c1 * _max_seq / GIB:.2f} GiB. c1 IS THE WEAKLY "
+          f"DETERMINED CONSTANT.")
+    _k = THREE_TERM["k_bytes_per_unit"]
+    _max_u = max(activation_units(PROFILES[n]) for n in _meas)
+    _k_slack = 0.15 * GIB / _max_u
+    print(f"  k  = {_k:.2f} B/unit could be wrong by +/-{_k_slack:.2f} "
+          f"(+/-{100 * _k_slack / _k:.0f}%) -- much tighter,")
+    print(f"     and it is independently MEASURED at "
+          f"{THREE_TERM['k_measured_bytes_per_unit']:.2f} by the wider/1b pair.")
+    print(f"  => the `deeper4k` profile (seq 4096) doubles the per-token term to")
+    print(f"     {_c1 * 4096 / GIB:.2f} GiB and separates two hypotheses about it "
+          f"by 1.75 GiB.")
+
+    print("\n--- FLOP model within tolerance on every measured run ---")
+    for _n, _m in _meas.items():
+        _pred = flops_per_step(param_count, PROFILES[_n])["total"] / 1e12
+        _impl = _m["model_tflop_s"] * _m["step_time_s"]
+        check(f"FLOPs {_n} within {PREDICTION_TOLERANCE:.0%}", _pred, _impl,
+              _impl * PREDICTION_TOLERANCE, " TF")
 
     print("\n--- geometry constraints Megatron enforces ---")
     for name, arch in PROFILES.items():
@@ -535,6 +665,27 @@ def report(param_count, target: str) -> None:
         print(f"       the measured k IS the result, not a refutation.")
 
     print()
+    print("  --- BEST AVAILABLE MODEL: three-term, fitted over all 4 runs ---")
+    m3 = memory_model_three_term(param_count, arch)
+    print(f"  static @18 B/param    : {m3['static'] / GIB:>7.2f} GiB")
+    print(f"  fixed term            : {m3['fixed'] / GIB:>7.2f} GiB")
+    print(f"  per-token term        : {m3['per_token'] / GIB:>7.2f} GiB  "
+          f"({THREE_TERM['c1_bytes_per_token']:,.0f} B/token x "
+          f"{arch['seq_length']})")
+    print(f"  per-layer term        : {m3['per_layer'] / GIB:>7.2f} GiB  "
+          f"({THREE_TERM['k_bytes_per_unit']:.2f} B/unit x "
+          f"{activation_units(arch):,})")
+    print(f"  PREDICTED PEAK        : {m3['predicted_peak'] / GIB:>7.2f} GiB  "
+          f"({100 * m3['fraction_of_card']:.1f}% of 22.49 GiB card)")
+    print(f"  +/-{PREDICTION_TOLERANCE:.0%} band            : "
+          f"[{m3['band'][0] / GIB:.2f}, {m3['band'][1] / GIB:.2f}] GiB")
+    print(f"  FITS?                 : "
+          f"{'YES' if m3['fits'] else 'NO -- predicted to OOM'}  "
+          f"(headroom {(A10G_TOTAL_BYTES - m3['predicted_peak']) / GIB:+.2f} GiB)")
+    print(f"  model's worst error over the 4 measured runs: "
+          f"{THREE_TERM['worst_error_gib']:.4f} GiB")
+
+    print()
     print("  --- predicted throughput ---")
     print(f"  tokens/step           : {flops['tokens']:,} "
           f"(unchanged: GBS {GLOBAL_BATCH_SIZE} x seq {arch['seq_length']})")
@@ -546,33 +697,39 @@ def report(param_count, target: str) -> None:
               f"{step:.3f} s/step  {flops['tokens'] / step:>7,.0f} tok/s")
     print()
     print("  --- REFUTATION THRESHOLDS (recorded before the run) ---")
-    # Pick the LIVE competing hypothesis. For smoke/wider that was the flat
-    # "+14% of static" rule. Once wider refuted it, the open question became
-    # which CALIBRATION of the decomposed model holds -- smoke-only or the
-    # two-point solve. Testing an already-refuted rule would waste the run.
-    if target not in ("smoke", "wider"):
-        competitor_name = "two-point calibration (smoke + wider)"
-        competitor = m2["predicted_peak"]
-        print(f"  NOTE: the flat +14% rule predicts {mem['naive_peak'] / GIB:.2f} GiB here, but it was")
-        print(f"        already REFUTED by the wider run; it is not the hypothesis under test.")
-    else:
-        competitor_name = "flat +14% of static rule"
-        competitor = mem["naive_peak"]
-    # The tolerance must be strictly under half the gap or the bands overlap
-    # and the run cannot discriminate between them. That would defeat the point.
-    gap = abs(competitor - mem["predicted_peak"]) / GIB
-    tol = min(0.15, 0.45 * gap)
-    lo, hi = mem["predicted_peak"] / GIB - tol, mem["predicted_peak"] / GIB + tol
-    nlo, nhi = competitor / GIB - tol, competitor / GIB + tol
-    print(f"  competing predictions are {gap:.2f} GiB apart; "
-          f"tolerance +/-{tol:.2f} GiB keeps the bands disjoint")
-    print(f"  R1 peak allocated inside [{lo:.2f}, {hi:.2f}] GiB")
-    print(f"     -> CONFIRMS the smoke-only calibration "
-          f"({mem['predicted_peak'] / GIB:.2f} GiB: full FP32 logits, 60.29 B/unit).")
-    print(f"  R2 peak allocated inside [{nlo:.2f}, {nhi:.2f}] GiB")
-    print(f"     -> CONFIRMS the {competitor_name} ({competitor / GIB:.2f} GiB).")
-    print(f"  R2b peak outside BOTH bands")
-    print(f"     -> both wrong; an unmodelled term dominates.")
+    # The two older two-term calibrations are both refuted, so neither is the
+    # hypothesis under test any more. The live question is whether the
+    # three-term model's per-token coefficient is right, and the sharpest
+    # alternative is that the full FP32 vocab logits are resident at peak --
+    # which the coefficient says are only ~24.6% resident.
+    t3 = memory_model_three_term(param_count, arch)
+    full_logits_peak = (t3["static"] + t3["fixed"] + logits_bytes(arch)
+                        + t3["per_layer"])
+    tol = PREDICTION_TOLERANCE
+    t1lo, t1hi = t3["band"]
+    t2lo, t2hi = full_logits_peak * (1 - tol), full_logits_peak * (1 + tol)
+    t_disjoint = t1hi < t2lo or t2hi < t1lo
+    print(f"  T1 peak inside [{t1lo / GIB:.2f}, {t1hi / GIB:.2f}] GiB "
+          f"(+/-{tol:.0%} of {t3['predicted_peak'] / GIB:.2f})")
+    print(f"     -> CONFIRMS the three-term model: the per-token term is "
+          f"{t3['per_token'] / GIB:.2f} GiB,")
+    print(f"        i.e. the FP32 vocab logits are NOT fully resident at peak.")
+    print(f"  T2 peak inside [{t2lo / GIB:.2f}, {t2hi / GIB:.2f}] GiB "
+          f"(+/-{tol:.0%} of {full_logits_peak / GIB:.2f})")
+    print(f"     -> the FULL FP32 logits ({logits_bytes(arch) / GIB:.2f} GiB) "
+          f"ARE resident; the coefficient is wrong.")
+    print(f"  bands disjoint at +/-{tol:.0%}? {t_disjoint}  "
+          f"(gap {abs(full_logits_peak - t3['predicted_peak']) / GIB:.2f} GiB)")
+    if not t_disjoint:
+        print(f"     WARNING: overlapping bands -- this profile cannot "
+              f"discriminate them.")
+    print(f"  T3 peak outside BOTH bands without an OOM")
+    print(f"     -> neither; report the measured per-token value, which a "
+          f"seq sweep gives directly.")
+    print(f"  (superseded: the two-term calibrations predicted "
+          f"{mem['predicted_peak'] / GIB:.2f} and {m2['predicted_peak'] / GIB:.2f} GiB,")
+    print(f"   and the flat +14% rule {mem['naive_peak'] / GIB:.2f} GiB. All three "
+          f"are refuted and are not under test.)")
 
 
     t_floor = flops["tokens"] / (flops["total"] / (floor_tflops * 1e12))
@@ -581,7 +738,7 @@ def report(param_count, target: str) -> None:
     print(f"     -> the FLOP model or the efficiency assumption is wrong.")
     print(f"  R4 MODEL_TFLOP/s < {floor_tflops} (below smoke)")
     print(f"     -> refutes 'bigger GEMMs are at least as efficient'.")
-    print(f"  R5 OOM at a predicted {100 * mem['predicted_peak'] / A10G_TOTAL_BYTES:.0f}% of card")
+    print(f"  R5 OOM at a predicted {100 * t3['fraction_of_card']:.0f}% of card")
     print(f"     -> an unmodelled allocation dominates; 18 B/param is not a floor.")
     print(f"  R6 log reports TOTAL params != {mem['params'] / 1e6:.1f} M")
     print(f"     -> the env override was DROPPED; the run is void, not a result.")
