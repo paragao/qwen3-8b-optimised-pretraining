@@ -116,6 +116,29 @@ data:
   # EKS pods use eth0. Pinning it stops NCCL probing veth/docker interfaces.
   NCCL_SOCKET_IFNAME: "eth0"
   NCCL_DEBUG: "WARN"
+
+  # --- EFA ----------------------------------------------------------------
+  # g5.8xlarge supports EFA (verified: ec2 describe-instance-types reports
+  # NetworkInfo.EfaSupported = true), with ONE EFA interface. EFA bypasses the
+  # kernel network stack for NCCL, which cuts all-reduce latency -- and the
+  # gradient all-reduce is the limiting factor for 2-node training here.
+  #
+  # EFA is OFF by default because it needs cluster-side setup that this
+  # manifest cannot do for you (see the EFA prerequisites in the header). With
+  # it off, NCCL uses TCP over the 25 Gbit ENA interface and the job still
+  # works -- it is just slower, and the scaling tables below (which assume EFA)
+  # become optimistic.
+  #
+  # To enable: set USE_EFA to "1", then uncomment the efa resource requests in
+  # the training container AND the NCCL_PROTO/FI_PROVIDER lines below. The
+  # resource request cannot be toggled by an env var, so that part is a real
+  # edit -- g5/eks/set-efa.sh does it for you.
+  USE_EFA: "0"
+  # Only consulted when EFA is enabled. efa is the libfabric provider name;
+  # NCCL_PROTO=simple is the conventional setting for EFA with NCCL.
+  FI_PROVIDER: "efa"
+  FI_EFA_USE_DEVICE_RDMA: "1"
+  NCCL_PROTO: "simple"
 ---
 # Shared dataset volume.
 #
@@ -429,6 +452,29 @@ spec:
               echo "=== node_rank=${JOB_COMPLETION_INDEX} of ${NNODES} ==="
               echo "    rendezvous: ${MASTER_ADDR}:${MASTER_PORT}"
               echo "    dataset   : ${DATA_PATH}"
+
+              # Report the transport actually in effect. If USE_EFA=1 but the
+              # device is absent, NCCL falls back to TCP SILENTLY and the run
+              # just goes slower -- so check rather than assume.
+              if [ "${USE_EFA:-0}" = "1" ]; then
+                if [ -e /dev/infiniband/uverbs0 ] || ls /sys/class/infiniband 2>/dev/null | grep -q .; then
+                  echo "    transport : EFA requested AND device present"
+                  export FI_PROVIDER="${FI_PROVIDER:-efa}"
+                  export FI_EFA_USE_DEVICE_RDMA="${FI_EFA_USE_DEVICE_RDMA:-1}"
+                  export NCCL_PROTO="${NCCL_PROTO:-simple}"
+                  fi_info -p efa 2>/dev/null | head -5 | sed 's/^/      /' || true
+                else
+                  echo "    transport : EFA requested but NO DEVICE VISIBLE -> TCP" >&2
+                  echo "                The pod has no vpc.amazonaws.com/efa resource." >&2
+                  echo "                Uncomment it in resources, and install the EFA" >&2
+                  echo "                device plugin. Continuing over TCP." >&2
+                  unset FI_PROVIDER FI_EFA_USE_DEVICE_RDMA NCCL_PROTO
+                fi
+              else
+                echo "    transport : TCP over ${NCCL_SOCKET_IFNAME} (USE_EFA=0)"
+                unset FI_PROVIDER FI_EFA_USE_DEVICE_RDMA NCCL_PROTO
+              fi
+
               torchrun \
                 --nproc_per_node=1 \
                 --nnodes="${NNODES}" \
@@ -480,10 +526,19 @@ spec:
               cpu: "8"
               memory: 32Gi
               nvidia.com/gpu: 1
+              # --- EFA: uncomment BOTH of these (and set USE_EFA=1) ---------
+              # g5.8xlarge has 1 EFA interface. The EFA device plugin must be
+              # installed or the pod stays Pending with
+              #   Insufficient vpc.amazonaws.com/efa
+              # which is the failure mode to expect if you enable this without
+              # the plugin. Leave commented for the TCP path.
+              # vpc.amazonaws.com/efa: 1
             limits:
-              # The A10G is 22888 MiB; the measured profiles peak at 6.84-11.76
-              # GiB, so there is headroom. Host memory must cover the 16Gi
+              # The A10G is 22888 MiB; measured profiles peak at 6.84-11.76
+              # GiB and the `1b` profile is predicted at ~19 GiB, so headroom
+              # is thin at 1B but present. Host memory must cover the 16Gi
               # /dev/shm emptyDir plus the dataloader workers.
               cpu: "30"
               memory: 96Gi
               nvidia.com/gpu: 1
+              # vpc.amazonaws.com/efa: 1

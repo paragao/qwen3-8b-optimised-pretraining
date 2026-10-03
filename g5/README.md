@@ -144,6 +144,7 @@ check that the estimate can be trusted.
 | `smoke` (default) | 4 | 1024 | 3072 | 8/2 | 1024 | 359.4 M | 6.02 GiB | 26.8% |
 | `wider` | 6 | 1536 | 4608 | 12/3 | 1024 | 629.5 M | 10.55 GiB | 46.9% |
 | `deeper` | 12 | 1024 | 3072 | 8/2 | 2048 | 455.9 M | 7.64 GiB | 34.0% |
+| **`1b`** | **20** | **1536** | **4608** | **12/3** | **1024** | **1,009.4 M** | **16.92 GiB** | **75.2%** |
 
 The `Static` column is analytic and excludes activations. All three profiles
 are now measured:
@@ -153,6 +154,7 @@ are now measured:
 | `smoke` | 6.02 GiB | **6.84 GiB** | 7.26 GiB | 30.4% | **24,757** | 30.9 | 24.7% |
 | `wider` | 10.55 GiB | **11.76 GiB** | 12.25 GiB | 52.3% | **14,357** | 34.9 | 27.9% |
 | `deeper` | 7.64 GiB | **9.66 GiB** | 10.03 GiB | 43.0% | **18,793** | **36.7** | **29.4%** |
+| `1b` | 16.92 GiB | not run (predicted 18.64-19.77) | — | 83-88% | predicted 6,378-7,843 | — | — |
 
 Percentages are against the A10G's **22.49 GiB total** (`nvidia-smi` reports
 23028 MiB). All three ran 0 skipped and 0 NaN iterations, so the BF16 path is
@@ -167,6 +169,62 @@ width, having doubled seq instead. Doubling seq beat a 50% hidden increase.
 **Parameter count is not a proxy for step cost.** `deeper` has fewer
 parameters than `wider` (455.9 M vs 629.5 M) but does 1.605x the FLOPs per
 step, because seq 2048 doubles tokens/step and quadruples the attention term.
+
+### The `1b` profile: 1 billion parameters on one A10G
+
+```bash
+# on the instance
+NUM_LAYERS=20 HIDDEN_SIZE=1536 FFN_HIDDEN_SIZE=4608 \
+  NUM_ATTENTION_HEADS=12 NUM_QUERY_GROUPS=3 \
+  DATA_PATH=/workspace/run/datasets/c4_qwen3 TRAIN_ITERS=50 ./g5/run.sh
+
+# driven from a laptop
+NUM_LAYERS=20 HIDDEN_SIZE=1536 FFN_HIDDEN_SIZE=4608 \
+  NUM_ATTENTION_HEADS=12 NUM_QUERY_GROUPS=3 \
+  TRAIN_ITERS=50 ./g5/finish-run.sh
+```
+
+**1,009,385,472 parameters**, 16.92 GiB static (75.2% of the card), predicted to
+peak at **18.64-19.77 GiB (83-88%)**. It should fit with ~2.7 GiB spare, but it
+is by far the tightest profile — `wider`, the previous largest, peaked at 52%.
+**Treat an OOM as a real possibility.** Fallback:
+
+```bash
+NUM_LAYERS=8 HIDDEN_SIZE=2048 FFN_HIDDEN_SIZE=6144 \
+  NUM_ATTENTION_HEADS=16 NUM_QUERY_GROUPS=4 ./g5/run.sh   # 1.0082 B, ~18.7 GiB
+```
+
+Two deliberate choices in the shape, both worth knowing:
+
+**Hidden 1536 / 20 layers, not 2048 / 8.** Aspect ratio 77 hidden per layer
+against Qwen3-8B's 114; the shallower alternative is 256, more than 2x off.
+
+**It is a single-variable change from `wider`** — same hidden, ffn, heads,
+query groups and seq_length, with only `num_layers` moving 6 -> 20. That is the
+experiment the refuted memory model needed and that none of the first three
+profiles could provide: because both have `seq_length = 1024`, the FP32 logits
+term is identical and **cancels exactly** in the difference of their residuals,
+so
+
+```
+k = (residual_1b - 1.2065 GiB) / 22,020,096 units
+```
+
+measures the per-layer activation constant with **no assumption about the
+logits term at all**. The two pair-fits that disagreed after `deeper` predict
+18.64 GiB (k=24.81 B/unit) and 19.77 GiB (k=80.17), 1.14 GiB apart, so the run
+picks one. `predict.py --self-check` asserts the single-variable property so a
+future edit cannot silently break it.
+
+Note the vocab share: embedding + LM head is **466.7 M of 1,009.4 M (46.2%)**,
+against 15.2% for Qwen3-8B. A 1B proxy carrying the full 151,936 vocab is
+structurally more vocab-dominated than the model it proxies. That is the price
+of keeping the real tokenizer and the real logits/loss path, which is what the
+validation exists to exercise.
+
+Full prediction and thresholds: [`results/1b-prediction.md`](results/1b-prediction.md).
+
+
 
 ### Sizing an untested profile: measure it
 
@@ -377,6 +435,26 @@ Run `./g5/prepare-c4.sh` on **both** nodes: there is no shared filesystem on
 this path, so each needs its own copy of the dataset. (The EKS path uses one
 ReadWriteMany volume instead.)
 
+### Or drive the whole 2-node run from a laptop
+
+```bash
+NODES=2 ./g5/launch-instance.sh                   # launch both
+TRAIN_ITERS=1000 ./g5/finish-run-2node.sh         # build c4 + run on both
+```
+
+`finish-run-2node.sh` resolves both instance ids and rank 0's private address,
+pushes a 60-second ephemeral SSH key to each over SSM (no security-group rule,
+nothing persisted to `authorized_keys`), copies the changed `g5/` files, builds
+the dataset on both nodes concurrently, starts **rank 1 first** so the
+rendezvous has both ends present, waits for both, then parses rank 0's
+throughput and retrieves its log.
+
+It defaults `GLOBAL_BATCH_SIZE` to **16**, not 8, for the reason below. It also
+refuses to start if `g5/train.py` is not DP-aware, if either node's SSM agent
+is not Online, or if rank 0's address is not RFC1918 — and warns loudly if the
+two nodes landed in different AZs, since every all-reduce would then cross an
+AZ boundary.
+
 Tear both down in one call:
 
 ```bash
@@ -494,6 +572,56 @@ debugging easier.** That publishes a port carrying an unauthenticated PyTorch
 rendezvous store onto the node or the internet. To observe a run use
 `kubectl logs` or `kubectl port-forward`, which tunnel through the API server
 and need no exposure. `g5/eks/validate.py` asserts all of this.
+
+### EFA
+
+g5.8xlarge **does** support EFA (`ec2 describe-instance-types` reports
+`NetworkInfo.EfaSupported: true`), with one EFA interface. EFA bypasses the
+kernel network stack for NCCL, which cuts all-reduce latency — and the gradient
+all-reduce is the limiting factor for 2-node training here, so this is the one
+knob that moves the scaling tables above toward their ceilings.
+
+It ships **off**, because it needs cluster-side setup this manifest cannot do
+for you. Turn it on with:
+
+```bash
+./g5/eks/set-efa.sh on          # or: off, or: on --dry-run
+python3 g5/eks/validate.py      # asserts USE_EFA and the resource agree
+```
+
+Two things must change together and only one is an env var, which is why there
+is a script:
+
+| | what it does |
+|---|---|
+| `USE_EFA` in the ConfigMap | selects the libfabric provider at run time |
+| `vpc.amazonaws.com/efa` in `resources` | makes the device visible to the pod |
+
+A Kubernetes **resource request cannot be driven by an env var**, so enabling
+EFA is a real edit. Setting `USE_EFA=1` without the resource gets you a pod with
+no EFA device: NCCL falls back to TCP and the run is simply slower. The training
+container detects exactly that and says so rather than hiding it, and
+`validate.py` fails the mismatch.
+
+Cluster prerequisites, and the second one is what usually bites:
+
+```bash
+# 1. the EFA device plugin
+helm repo add eks https://aws.github.io/eks-charts
+helm install aws-efa-k8s-device-plugin --namespace kube-system \
+  eks/aws-efa-k8s-device-plugin
+
+# 2. confirm nodes actually advertise the resource
+kubectl get nodes -o custom-columns=NAME:.metadata.name,EFA:.status.allocatable.'vpc\.amazonaws\.com/efa'
+```
+
+If that column is empty the pod stays `Pending` with
+`Insufficient vpc.amazonaws.com/efa`. **The node group must have been created
+with EFA on its launch template** — neither the script nor the plugin can add
+an interface to a running node.
+
+EFA only matters at 2 nodes. At 1 node there is no inter-node traffic, so it
+changes nothing.
 
 ### Notes
 

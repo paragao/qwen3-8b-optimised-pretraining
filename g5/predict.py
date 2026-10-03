@@ -57,6 +57,26 @@ PROFILES = {
                   num_attention_heads=12, num_query_groups=3, seq_length=1024),
     "deeper": dict(num_layers=12, hidden_size=1024, ffn_hidden_size=3072,
                    num_attention_heads=8, num_query_groups=2, seq_length=2048),
+    # ~1B parameters. Deliberately hidden 1536 rather than a wider/shallower
+    # shape at the same parameter count, for two reasons:
+    #
+    #  1. Aspect ratio. 1536/20 = 77 hidden per layer, against Qwen3-8B's
+    #     4096/36 = 114. The alternative (hidden 2048 / 8 layers) is 256, more
+    #     than 2x off, so this is the better proxy for the real architecture.
+    #  2. It is a SINGLE-VARIABLE change from `wider` -- same hidden, ffn,
+    #     heads, query groups and seq_length, only num_layers differs (6 -> 20).
+    #     Because seq_length is identical, the logits term cancels exactly in
+    #     the difference of the two residuals, so the pair MEASURES the
+    #     per-layer activation constant directly. That is the experiment the
+    #     refuted memory model needed and that none of the first three
+    #     profiles could provide.
+    #
+    # The cost of that choice is activation memory: 31.5M activation units
+    # against 16.8M for hidden 2048 / 8 layers. If this profile OOMs, the
+    # fallback is NUM_LAYERS=8 HIDDEN_SIZE=2048 FFN_HIDDEN_SIZE=6144
+    # NUM_ATTENTION_HEADS=16 NUM_QUERY_GROUPS=4 (1.0082B, ~18.7 GiB worst case).
+    "1b": dict(num_layers=20, hidden_size=1536, ffn_hidden_size=4608,
+               num_attention_heads=12, num_query_groups=3, seq_length=1024),
 }
 
 # Qwen3-8B itself, as a sanity anchor for the lifted formula.
@@ -243,6 +263,50 @@ def memory_model_two_point(param_count, arch: dict, cal2: dict) -> dict:
     )
 
 
+def anchored_prediction(param_count, target: str, anchor: str = "wider") -> dict:
+    """Predict `target`'s peak by extrapolating only the num_layers delta.
+
+    Stronger than either calibration for a profile that differs from a MEASURED
+    profile in num_layers alone. Starting from the anchor's measured residual
+    and adding only `k * delta_units` means:
+
+      * the static term is exact (analytic, from param_count)
+      * the logits term CANCELS, because both have the same seq_length -- so
+        the prediction carries no assumption about it at all
+      * the only extrapolated quantity is the per-layer constant k
+
+    Conversely, the measurement inverts to give k directly:
+        k = (residual_target - residual_anchor) / (units_target - units_anchor)
+    which is the first clean measurement of k this repo can make.
+    """
+    measured = {"smoke": SMOKE_MEASURED, "wider": WIDER_MEASURED,
+                "deeper": DEEPER_MEASURED}
+    if anchor not in measured:
+        raise SystemExit(f"FATAL: anchor {anchor!r} has no measurement")
+    a, t = PROFILES[anchor], PROFILES[target]
+    diffs = sorted(k for k in t if a[k] != t[k])
+    if diffs != ["num_layers"]:
+        raise SystemExit(
+            f"FATAL: {target} differs from {anchor} in {diffs}, not num_layers "
+            "alone, so the logits term does not cancel and this anchoring is "
+            "invalid. Use the ordinary report instead."
+        )
+    resid_anchor = (measured[anchor]["peak_allocated_gib"] * GIB
+                    - param_count(a, VOCAB_SIZE)["total"] * 18)
+    d_units = activation_units(t) - activation_units(a)
+    static = param_count(t, VOCAB_SIZE)["total"] * 18
+    # The two per-layer constants the earlier pair-fits disagree about.
+    candidates = {
+        "k=24.81 B/unit (smoke+deeper fit)": 24.81,
+        "k=80.17 B/unit (smoke+wider fit)": 80.17,
+    }
+    out = {}
+    for label, k in candidates.items():
+        out[label] = static + resid_anchor + k * d_units
+    return dict(static=static, resid_anchor=resid_anchor, d_units=d_units,
+                predictions=out, anchor=anchor)
+
+
 def flops_per_step(param_count, arch: dict) -> dict:
     """Model FLOPs for one optimizer step.
 
@@ -283,6 +347,20 @@ def self_check(param_count) -> int:
           param_count(PROFILES["wider"], VOCAB_SIZE)["total"] / 1e6, 629.5, 0.1, " M")
     check("deeper total params",
           param_count(PROFILES["deeper"], VOCAB_SIZE)["total"] / 1e6, 455.9, 0.1, " M")
+    check("1b total params",
+          param_count(PROFILES["1b"], VOCAB_SIZE)["total"] / 1e9, 1.0094, 0.0005, " B")
+
+    print("\n--- 1b must be a single-variable change from wider ---")
+    # This is the property that makes the pair able to measure the per-layer
+    # activation constant with the logits term cancelled. If a future edit
+    # changes any other field, that capability is silently lost.
+    _diffs = sorted(k for k in PROFILES["1b"]
+                    if PROFILES["wider"][k] != PROFILES["1b"][k])
+    _ok = _diffs == ["num_layers"]
+    print(f"  [{'PASS' if _ok else 'FAIL'}] only num_layers differs from wider"
+          f"{'':<10} got {_diffs}")
+    if not _ok:
+        failures.append("1b is not a single-variable change from wider")
 
     print("\n--- FLOP model reproduces the MEASURED smoke run ---")
     measured = SMOKE_MEASURED["model_tflop_s"] * 1e12 * SMOKE_MEASURED["step_time_s"]
@@ -389,6 +467,37 @@ def report(param_count, target: str) -> None:
               f"({100 * m2['predicted_peak'] / A10G_TOTAL_BYTES:.1f}% of card)")
         print(f"  DISCRIMINATING GAP    : "
               f"{abs(m2['predicted_peak'] - mem['predicted_peak']) / GIB:>7.2f} GiB")
+
+    # A profile differing from a MEASURED profile in num_layers alone gets a
+    # stronger prediction: anchor on that profile's measured residual and
+    # extrapolate only the layer delta, which cancels the logits term entirely.
+    anchored = None
+    for _anchor in ("wider", "smoke", "deeper"):
+        if target == _anchor:
+            continue
+        _d = sorted(k for k in arch if PROFILES[_anchor][k] != arch[k])
+        if _d == ["num_layers"]:
+            anchored = anchored_prediction(param_count, target, _anchor)
+            break
+    if anchored:
+        print()
+        print(f"  --- ANCHORED on measured `{anchored['anchor']}` "
+              f"(single-variable: num_layers only) ---")
+        print(f"  This is the STRONGEST prediction available for this profile.")
+        print(f"  Both share seq_length, so the FP32 logits term cancels exactly")
+        print(f"  in the difference and is not assumed at all.")
+        print(f"  {anchored['anchor']} measured residual : "
+              f"{anchored['resid_anchor'] / GIB:>7.4f} GiB")
+        print(f"  delta activation units : {anchored['d_units']:>12,}")
+        for label, peak in sorted(anchored["predictions"].items(),
+                                  key=lambda kv: kv[1]):
+            print(f"  {label:<36} -> {peak / GIB:>6.2f} GiB "
+                  f"({100 * peak / A10G_TOTAL_BYTES:.1f}% of card)")
+        _vals = sorted(anchored["predictions"].values())
+        print(f"  DISCRIMINATING GAP     : {(_vals[-1] - _vals[0]) / GIB:>7.2f} GiB")
+        print(f"  The measurement INVERTS to give the per-layer constant:")
+        print(f"    k = (residual - {anchored['resid_anchor'] / GIB:.4f} GiB) "
+              f"/ {anchored['d_units']:,} units")
 
     print()
     print("  --- predicted throughput ---")

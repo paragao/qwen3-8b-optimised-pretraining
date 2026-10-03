@@ -187,6 +187,29 @@ check("DATA_PATH points at the mounted volume",
 check("repo mounted read-only in training pod",
       any(m["name"] == "repo" and m.get("readOnly") for m in train["volumeMounts"]))
 
+print("\n=== EFA CONSISTENCY ===")
+# USE_EFA and the vpc.amazonaws.com/efa resource request must agree. The
+# mismatch is quiet in the worst direction: USE_EFA=1 with no resource means
+# the pod has no EFA device, NCCL falls back to TCP, and the only symptom is
+# that the run is slower than the scaling tables predict.
+_use_efa = cm["data"].get("USE_EFA", "0") == "1"
+_efa_key = "vpc.amazonaws.com/efa"
+_req = _efa_key in train["resources"].get("requests", {})
+_lim = _efa_key in train["resources"].get("limits", {})
+print(f"  USE_EFA={cm['data'].get('USE_EFA')!r}  resource in requests={_req}  limits={_lim}")
+check("EFA resource requested exactly when USE_EFA=1",
+      (_req and _lim) == _use_efa,
+      "a mismatch silently falls back to TCP" if _use_efa != _req else "")
+check("EFA resource present in BOTH requests and limits, or neither",
+      _req == _lim)
+if _use_efa and _req and _lim:
+    check("EFA quantity is 1 (g5.8xlarge has one EFA interface)",
+          train["resources"]["requests"][_efa_key] == 1
+          and train["resources"]["limits"][_efa_key] == 1)
+if _use_efa:
+    check("libfabric provider is set for EFA",
+          cm["data"].get("FI_PROVIDER") == "efa")
+
 print()
 if fails:
     print(f"MANIFEST VALIDATION FAILED: {len(fails)}: {', '.join(fails)}")
