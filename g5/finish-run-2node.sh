@@ -359,6 +359,67 @@ for i in 1 0; do
 done
 
 # Indexed by rank, so a failure can be ATTRIBUTED rather than just flagged.
+# A hung run produces NO output and `wait` blocks forever, so the nodes bill at
+# ~$4.90/hr until a human notices. That cost 55 minutes on a NCCL bootstrap
+# hang. Watch the two rank logs for growth instead, and abort if both go quiet.
+# Growth is the right signal rather than elapsed time: a legitimate long step
+# still logs, while a network-level hang produces nothing at all.
+STALL_TIMEOUT="${STALL_TIMEOUT:-600}"   # seconds of total silence before abort
+STALL_POLL=30
+stall_abort=0
+last_size=-1
+quiet_for=0
+while :; do
+  any_alive=0
+  for i in 0 1; do
+    kill -0 "${RUN_PIDS[$i]}" 2>/dev/null && any_alive=1
+  done
+  [[ "${any_alive}" -eq 0 ]] && break
+
+  size=0
+  for i in 0 1; do
+    s="$(wc -c < "${KEYDIR}/run-${i}.log" 2>/dev/null || echo 0)"
+    size=$(( size + s ))
+  done
+
+  if [[ "${size}" -eq "${last_size}" ]]; then
+    quiet_for=$(( quiet_for + STALL_POLL ))
+  else
+    quiet_for=0
+    last_size="${size}"
+  fi
+
+  if [[ "${quiet_for}" -ge "${STALL_TIMEOUT}" ]]; then
+    stall_abort=1
+    echo "" >&2
+    echo "FATAL: both ranks produced no output for ${quiet_for}s -- treating this" >&2
+    echo "       as a hang and aborting so the nodes stop billing." >&2
+    echo "       Most likely cause: the security group does not permit NCCL's" >&2
+    echo "       ephemeral inbound ports between the nodes. The torchrun" >&2
+    echo "       rendezvous on ${MASTER_PORT} can succeed while NCCL's own" >&2
+    echo "       bootstrap sockets are dropped, which stalls silently." >&2
+    echo "       Check it with:" >&2
+    echo "         aws ec2 describe-security-groups --group-ids <sg> \\" >&2
+    echo "           --query 'SecurityGroups[0].IpPermissions'" >&2
+    echo "       It must span tcp/1-65535 sourced from the group itself." >&2
+    echo "       Re-run with NCCL_DEBUG=INFO to see the transport NCCL picks." >&2
+    for i in 0 1; do
+      kill "${RUN_PIDS[$i]}" 2>/dev/null || true
+    done
+    # Free the GPUs too: killing the local ssh client does not stop the remote
+    # container, which would keep holding the device on a still-billing node.
+    for i in 0 1; do
+      set_opts "${i}"
+      ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+        'docker ps -q --filter ancestor=nvcr.io/nvidia/nemo:26.04 | xargs -r docker kill' \
+        >/dev/null 2>&1 || true
+    done
+    break
+  fi
+
+  sleep "${STALL_POLL}"
+done
+
 run_fail=0
 RUN_STATUS=()
 for i in 0 1; do

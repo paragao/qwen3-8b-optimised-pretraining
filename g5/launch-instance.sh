@@ -133,16 +133,45 @@ else
   echo "    exists, reusing ${SG_ID}"
 fi
 
-# For 2 nodes the rendezvous has to cross between instances. The rule's source
-# is the security group ITSELF (UserIdGroupPairs), not a CIDR -- so the only
-# things that can reach MASTER_PORT are instances in this same group. A CIDR
+# For 2 nodes the traffic has to cross between instances. The rule's source is
+# the security group ITSELF (UserIdGroupPairs), not a CIDR -- so the only
+# things that can reach these ports are instances in this same group. A CIDR
 # would widen it to the whole subnet or VPC; 0.0.0.0/0 would expose an
 # unauthenticated PyTorch rendezvous store to the internet. Neither is used.
+#
+# WHY THE WHOLE TCP RANGE AND NOT JUST MASTER_PORT:
+# Opening only MASTER_PORT looks tighter and does not work. torchrun's TCPStore
+# rendezvous does use MASTER_PORT, but NCCL then builds its communicator over
+# its OWN sockets on EPHEMERAL ports: each rank listens on a kernel-assigned
+# port and the peer opens a NEW INBOUND connection to it. Security groups are
+# stateful only for return traffic on an already-established flow, so those
+# fresh inbound connections are dropped and NCCL's bootstrap hangs forever --
+# with the rendezvous having succeeded, so the symptom is a silent stall right
+# after "NCCL version ..." and not an error. Measured: 55 minutes of hang with
+# ~140 bytes/sec of inter-node traffic.
+# This is AWS's documented requirement, not a workaround:
+#   https://docs.aws.amazon.com/us_en/AWSEC2/latest/UserGuide/efa-start-nccl.html
+#   https://docs.aws.amazon.com/pcs/latest/userguide/working-with_networking_sg.html
+# The exposure is unchanged in kind: still self-referencing, still no CIDR, so
+# the only hosts that can reach any of it are the cluster's own nodes.
+# NOTE: enabling EFA additionally needs IpProtocol=-1 (EFA is not TCP).
+RDZV_DESC="NCCL + torchrun between cluster nodes only (self-referencing)"
 if [[ "${NODES}" -gt 1 ]]; then
-  echo "==> 2 nodes: granting tcp/${MASTER_PORT} from ${SG_ID} to itself"
+  echo "==> 2 nodes: granting tcp/1-65535 from ${SG_ID} to itself"
+
+  # Converge a group created by an earlier version of this script: it carries a
+  # single-port rule that is too narrow. Leaving it in place would also break
+  # the count assertion below. Revoking only ever REDUCES exposure.
+  if aws ec2 revoke-security-group-ingress \
+      --group-id "${SG_ID}" \
+      --ip-permissions "IpProtocol=tcp,FromPort=${MASTER_PORT},ToPort=${MASTER_PORT},UserIdGroupPairs=[{GroupId=${SG_ID}}]" \
+      >/dev/null 2>&1; then
+    echo "    revoked the legacy single-port rule (tcp/${MASTER_PORT} only)"
+  fi
+
   if aws ec2 authorize-security-group-ingress \
       --group-id "${SG_ID}" \
-      --ip-permissions "IpProtocol=tcp,FromPort=${MASTER_PORT},ToPort=${MASTER_PORT},UserIdGroupPairs=[{GroupId=${SG_ID},Description=\"torchrun rendezvous between cluster nodes only\"}]" \
+      --ip-permissions "IpProtocol=tcp,FromPort=1,ToPort=65535,UserIdGroupPairs=[{GroupId=${SG_ID},Description=\"${RDZV_DESC}\"}]" \
       >/dev/null 2>&1; then
     echo "    added (source = the group itself, NOT a CIDR)"
   else
@@ -183,7 +212,22 @@ if [[ "${NODES}" -gt 1 ]]; then
     echo "FATAL: rendezvous rule source is ${PEER_SG}, expected ${SG_ID}" >&2
     exit 1
   fi
-  echo "    verified: 1 ingress rule, tcp/${MASTER_PORT}, source = ${SG_ID} (self), no CIDRs"
+  # Assert the range actually covers NCCL's ephemeral ports. A single-port rule
+  # satisfies every check above and still hangs the run for as long as you let
+  # it bill, so this is the assertion that catches the real defect.
+  read -r RULE_PROTO RULE_FROM RULE_TO <<EOF
+$(aws ec2 describe-security-groups --group-ids "${SG_ID}" \
+  --query 'SecurityGroups[0].IpPermissions[0].[IpProtocol,FromPort,ToPort]' --output text)
+EOF
+  if [[ "${RULE_PROTO}" != "tcp" || "${RULE_FROM}" -gt 1024 || "${RULE_TO}" -lt 65535 ]]; then
+    echo "FATAL: ingress rule is ${RULE_PROTO}/${RULE_FROM}-${RULE_TO}; it must span" >&2
+    echo "       the ephemeral range (tcp/1-65535). NCCL opens NEW inbound" >&2
+    echo "       connections on kernel-assigned ports, so a rule covering only" >&2
+    echo "       the rendezvous port lets the rendezvous succeed and then hangs" >&2
+    echo "       the NCCL bootstrap indefinitely. See the comment above." >&2
+    exit 1
+  fi
+  echo "    verified: 1 ingress rule, ${RULE_PROTO}/${RULE_FROM}-${RULE_TO}, source = ${SG_ID} (self), no CIDRs"
 else
   echo "    verified: 0 ingress rules"
 fi
@@ -280,7 +324,7 @@ for i in "${!INSTANCE_IDS[@]}"; do
 done
 echo " ami      : ${AMI_ID}"
 if [[ "${NODES}" -gt 1 ]]; then
-  echo " sg       : ${SG_ID}  (1 ingress rule: tcp/${MASTER_PORT} from itself)"
+  echo " sg       : ${SG_ID}  (1 ingress rule: tcp/1-65535 from itself, no CIDR)"
 else
   echo " sg       : ${SG_ID}  (0 ingress rules)"
 fi

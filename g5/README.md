@@ -483,10 +483,40 @@ NODES=2 ./g5/launch-instance.sh
 ```
 
 That puts both in **one subnet** (one AZ — cross-AZ would add latency to every
-all-reduce) and adds exactly **one** security-group ingress rule: TCP 29500
-whose source is *the security group itself*. Only instances in that group can
-reach the rendezvous — not the VPC, not the internet. The script asserts that
-shape and refuses to launch if the rule has a CIDR source.
+all-reduce) and adds exactly **one** security-group ingress rule: TCP
+**1-65535** whose source is *the security group itself*. Only instances in that
+group can reach any of it — not the VPC, not the internet. The script asserts
+that shape and refuses to launch if the rule has a CIDR source, or if the port
+range is too narrow to carry NCCL.
+
+**Why the whole TCP range and not just 29500.** Opening only the rendezvous
+port looks tighter and does not work. torchrun's TCPStore rendezvous does use
+29500, but NCCL then builds its communicator over its **own** sockets on
+**ephemeral** ports: each rank listens on a kernel-assigned port and the peer
+opens a *new inbound* connection to it. Security groups are stateful only for
+return traffic on an already-established flow, so those fresh inbound
+connections are dropped. The rendezvous succeeds, rank 0 prints
+`NCCL version ...`, and the run then **hangs silently** — measured here at 55
+minutes with ~140 bytes/sec of inter-node traffic while both nodes billed.
+This is AWS's documented requirement, not a workaround: see
+[EFA and NCCL](https://docs.aws.amazon.com/us_en/AWSEC2/latest/UserGuide/efa-start-nccl.html)
+and [AWS PCS security groups](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_networking_sg.html).
+Enabling EFA additionally needs `IpProtocol=-1`, since EFA is not TCP.
+
+If you have a cluster whose group still carries the old single-port rule,
+converge it without launching anything:
+
+```bash
+./g5/fix-cluster-sg.sh        # REGION=/NAME= to target another cluster
+```
+
+Two guards now exist for this failure mode: `g5/launch-instance.sh` asserts the
+range spans the ephemeral ports before it launches, and
+`g5/finish-run-2node.sh` aborts the run (and kills the remote containers) after
+`STALL_TIMEOUT` seconds — default 600 — of *both* rank logs producing no output
+at all, so a network-level hang costs ten minutes of billing rather than
+however long it takes someone to notice. Multi-node runs also default
+`NCCL_DEBUG=INFO`, because at `WARN` a transport hang prints nothing.
 
 Then on **each** node — identical except `NODE_RANK`, and `MASTER_ADDR` is
 rank 0's **private** address on both (the launcher prints the exact commands):

@@ -145,13 +145,22 @@ echo "Logging to ${LOG_FILE}"
 #   NNODES>1 : host networking, because a bridged container's rendezvous port
 #              is not reachable by the peer node. The rendezvous then listens
 #              on the instance's PRIVATE VPC address, and the boundary becomes
-#              the security group: g5/launch-instance.sh grants MASTER_PORT
+#              the security group: g5/launch-instance.sh grants tcp/1-65535
 #              ONLY from the cluster's own security group (a self-referencing
 #              rule), never from 0.0.0.0/0. Who can reach it: the other
 #              instance in the same security group, and nothing else.
+#              The range is the whole TCP span rather than just MASTER_PORT
+#              because NCCL's communicator uses EPHEMERAL ports that the peer
+#              connects INTO; a MASTER_PORT-only rule lets the rendezvous
+#              succeed and then hangs the NCCL bootstrap with no error.
 NET_ARGS=(--network bridge)
+# Single node keeps WARN so its recorded measurements stay comparable. Multi
+# node defaults to INFO: a transport-level hang prints NOTHING at WARN, which
+# is exactly the case where the log is the only evidence available.
+NCCL_DEBUG_DEFAULT=WARN
 if [[ "${NNODES}" -gt 1 ]]; then
   NET_ARGS=(--network host)
+  NCCL_DEBUG_DEFAULT=INFO
   echo "Multi-node: ${NNODES} nodes, this is NODE_RANK=${NODE_RANK}"
   echo "  rendezvous : ${MASTER_ADDR}:${MASTER_PORT} (private VPC address)"
   echo "  reachable by: instances in the same security group only"
@@ -190,7 +199,8 @@ docker run --rm \
   -e TORCH_COMPILE_DISABLE=1 \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e CUDA_DEVICE_MAX_CONNECTIONS=1 \
-  -e NCCL_DEBUG="${NCCL_DEBUG:-WARN}" \
+  -e NCCL_DEBUG="${NCCL_DEBUG:-${NCCL_DEBUG_DEFAULT}}" \
+  -e NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-}" \
   -w /workspace/run \
   "${CONTAINER_IMAGE}" \
   torchrun --nproc_per_node=1 --nnodes="${NNODES}" --node_rank="${NODE_RANK}" \
