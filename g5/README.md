@@ -646,6 +646,34 @@ datasets nor files.
    retries **once**. No other failure is retried: this one is self-correcting
    only because the failed attempt did the useful half.
 
+**That premise was false, and this driver's own watchdog falsified it.**
+Measured 2026-10-04, the self-heal fired and the retry still failed:
+
+| | rank 0 | rank 1 died on |
+|---|---|---|
+| attempt 1 | built **train**, built **valid**, killed at 420s before **test** | the `train` index |
+| the sync | copied 8 files, "verified byte-identical" — **no test index** | |
+| attempt 2 | loaded train+valid, built **test**, finished | the `test` index |
+
+Building the sample and shuffle indices for ~49k samples is a long numpy
+operation that logs **nothing** while it writes. The stall watchdog read that
+silence as a hang and killed rank 0 mid-build — the same mistake as the output
+buffering above, in a different place: **log silence is not the absence of
+progress.** It then synced a faithful copy of an incomplete cache and called it
+verified, because "byte-identical" was being checked against the wrong thing.
+
+Two fixes:
+
+- The watchdog now probes node 0's index-cache size when the logs go quiet, and
+  resets the stall timer while the cache is **growing**. It is only probed
+  while quiet, so a normal training run costs nothing extra. It fails safe: an
+  unchanged cache, a cache that does not exist, and a failed probe all still
+  abort, so a genuine hang is still caught.
+- The sync now asserts all three splits (`train`, `valid`, `test`) have a
+  document index, and reports an incomplete cache as incomplete instead of
+  reporting success. Byte-identical is necessary and not sufficient — a
+  faithful copy of two-thirds of a cache fails on the remaining third.
+
 The indices are keyed by a hash of the dataset path, sequence length, random
 seed and `TRAIN_ITERS × GLOBAL_BATCH_SIZE`, so **changing `TRAIN_ITERS` makes a
 previously warm cache a miss** and costs one self-healed attempt.

@@ -448,7 +448,7 @@ echo "    both nodes: checksums MATCH -- data-parallel ranks will index identica
 # must agree on the shuffle index, and copying makes them identical by
 # construction instead of trusting two hosts' numpy RNG to agree.
 sync_index_cache() {   # 0 = synced and verified, 1 = nothing to copy, 2 = error
-  local tarball list n0 tar_bytes
+  local tarball list n0 tar_bytes missing split
   tarball="${KEYDIR}/idxcache.tar"
   list="${KEYDIR}/idxcache.md5"
 
@@ -509,16 +509,38 @@ sync_index_cache() {   # 0 = synced and verified, 1 = nothing to copy, 2 = error
   # hold from an earlier TRAIN_ITERS -- those have different hashes in their
   # names, are never read by this run, and are not a reason to refuse to start.
   set_opts 1
-  if ssh "${OPTS[@]}" "${OS_USER}@${IDS[1]}" \
+  if ! ssh "${OPTS[@]}" "${OS_USER}@${IDS[1]}" \
        "cd '${INDEX_CACHE_DIR}' && md5sum -c --quiet" < "${list}" >/dev/null 2>&1; then
-    echo "    node 1: all ${n0} file(s) verified byte-identical to node 0"
-    return 0
+    echo "FATAL: the index cache on node 1 does not match node 0 after copying." >&2
+    echo "       Data-parallel ranks must load IDENTICAL indices; a mismatch" >&2
+    echo "       gives them different sample orders, which is silent corruption" >&2
+    echo "       rather than a crash. Refusing to start." >&2
+    return 2
   fi
-  echo "FATAL: the index cache on node 1 does not match node 0 after copying." >&2
-  echo "       Data-parallel ranks must load IDENTICAL indices; a mismatch" >&2
-  echo "       gives them different sample orders, which is silent corruption" >&2
-  echo "       rather than a crash. Refusing to start." >&2
-  return 2
+  echo "    node 1: all ${n0} file(s) verified byte-identical to node 0"
+
+  # Byte-identical is necessary and NOT sufficient: the copy can be a faithful
+  # reproduction of an INCOMPLETE cache. Megatron builds three splits (train,
+  # valid, test) and reads all three, so a cache holding only two is a cache
+  # that fails on the third. That is exactly what happened on 2026-10-04: the
+  # sync verified 8 files byte-identical, and the retry then died on the test
+  # index, which had never been built because this driver's own watchdog killed
+  # rank 0 mid-build. "Verified" meant verified-against-the-wrong-thing.
+  local missing=""
+  for split in train valid test; do
+    grep -qE -- "-GPTDataset-${split}-document_index[.]npy\$" "${list}" \
+      || missing="${missing} ${split}"
+  done
+  if [[ -n "${missing}" ]]; then
+    echo "    WARNING: node 0's cache is INCOMPLETE -- no index for:${missing}"
+    echo "             Megatron reads all three splits, so rank 1 will still"
+    echo "             fail on the first one it cannot find. Rank 0 will build"
+    echo "             the rest during this attempt; the self-heal then syncs"
+    echo "             the completed cache and retries."
+    return 1
+  fi
+  echo "    all three splits present (train, valid, test) -- the cache is complete"
+  return 0
 }
 
 say "Syncing the Megatron index cache from node 0 to node 1"
@@ -640,6 +662,7 @@ for RUN_ATTEMPT in 1 2; do
   stall_abort=0
   last_size=-1
   quiet_for=0
+  last_cache=-1
   while :; do
     any_alive=0
     for i in 0 1; do
@@ -658,6 +681,30 @@ for RUN_ATTEMPT in 1 2; do
     else
       quiet_for=0
       last_size="${size}"
+    fi
+
+    # Log silence is NOT the same as no progress. Building the GPTDataset
+    # sample and shuffle indices for ~49k samples is a long numpy op that logs
+    # NOTHING while it writes, so rank 0 can be quiet for minutes while making
+    # real progress on disk. On 2026-10-04 this watchdog killed rank 0 at 420s
+    # mid-build, after train and valid but BEFORE test -- which also destroyed
+    # the premise of the self-heal below, because the cache it then synced was
+    # incomplete and the retry failed on the missing test index.
+    #
+    # So when the logs go quiet, ask whether the index cache is still growing
+    # before calling it a hang. Only probed while quiet: during normal training
+    # the logs grow every iteration and this costs nothing.
+    if [[ "${quiet_for}" -gt 0 ]]; then
+      set_opts 0
+      cache_now="$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[0]}" \
+        "cat '${INDEX_CACHE_DIR}'/* 2>/dev/null | wc -c" 2>/dev/null | tr -d ' ')"
+      [[ -z "${cache_now}" ]] && cache_now=-1
+      if [[ "${cache_now}" -ne "${last_cache}" && "${cache_now}" -gt 0 ]]; then
+        echo "    index cache on node 0 is still growing (${cache_now} bytes)" \
+             "-- not a hang, resetting the stall timer"
+        quiet_for=0
+        last_cache="${cache_now}"
+      fi
     fi
 
     if [[ "${quiet_for}" -ge "${STALL_TIMEOUT}" ]]; then
