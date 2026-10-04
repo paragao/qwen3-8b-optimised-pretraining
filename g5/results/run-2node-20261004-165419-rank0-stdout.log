@@ -1,0 +1,490 @@
+Detected 1 GPU(s):
+name, memory.total [MiB], compute_cap
+NVIDIA A10G, 23028 MiB, 8.6
+
+====================
+== NeMo Framework ==
+====================
+
+NVIDIA Release  (build 323980803)
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+NOTE: The SHMEM allocation limit is set to the default of 64MB.  This may be
+   insufficient for NeMo Framework.  NVIDIA recommends the use of the following flags:
+   docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 ...
+
+Logging to /home/ubuntu/qwen3-g5/run/logs/g5-validation-20261004-154611.log
+Multi-node: 2 nodes, this is NODE_RANK=0
+  rendezvous : 172.31.41.203:29500 (private VPC address)
+  reachable by: instances in the same security group only
+  NOTE: at fixed GLOBAL_BATCH_SIZE, 2 nodes is ~1.05-1.07x on the
+        smoke/wider profiles because the gradient all-reduce does not
+        shrink. Set GLOBAL_BATCH_SIZE=16 for ~1.8-2.0x.
+
+====================
+== NeMo Framework ==
+====================
+
+NVIDIA Release  (build 323980803)
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Multiple distributions found for package modelopt. Picked distribution: nvidia-modelopt
+/opt/venv/lib/python3.12/site-packages/modelopt/torch/__init__.py:53: UserWarning: transformers>=5.0 support is experimental. Unified Hugging Face checkpoint export for quantized checkpoints may not work for some models yet.
+  _warnings.warn(
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/models/mimo/config/base_configs.py:12: UserWarning: MimoModelConfig is experimental and still under active development. The API may change without notice in future releases.
+  class MimoModelConfig:
+========================================================================
+Qwen3 single-GPU stack validation (g5.8xlarge / A10G)
+========================================================================
+  device                : NVIDIA A10G (22.1 GiB)
+  torch / cuda          : 2.11.0a0+eb65b36914.nv26.02 / 13.1
+  compute capability    : sm_86
+  --- architecture: proxy vs Qwen3-8B reference ---
+  num_layers            : 4        (Qwen3-8B: 36)
+  hidden_size           : 1024     (Qwen3-8B: 4096)
+  ffn_hidden_size       : 3072     (Qwen3-8B: 12288)
+  num_attention_heads   : 8        (Qwen3-8B: 32)
+  num_query_groups      : 2        (Qwen3-8B: 8)
+  seq_length            : 1024     (Qwen3-8B: 4096)
+  vocab_size            : 151936   (Qwen3-8B: 151936)  <- unchanged
+  --- parameters ---
+  embedding + LM head   :     311.2 M
+  transformer layers    :      48.2 M
+  TOTAL                 :     359.4 M
+  --- static memory estimate (18 B/param, Adam + FP32 master) ---
+  optimizer+weights     :      6.02 GiB
+  of device total        :      27.3 %
+========================================================================
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+`torch_dtype` is deprecated! Use `dtype` instead!
+  data parallel size    : 2
+  grad accum per rank   : 8
+  NOTE: at fixed GLOBAL_BATCH_SIZE, adding a node halves per-rank compute but
+        NOT the gradient all-reduce, so throughput barely improves. Scale
+        GLOBAL_BATCH_SIZE with the node count (=16) for real gains.
+  dataset: real Megatron-indexed data at /workspace/run/datasets/c4_qwen3
+  tokens per step       : 16,384 (16 seq x 1024 tok)
+  train_iters           : 1000
+/workspace/repo/g5/train.py:335: UserWarning: Function 'pretrain' is experimental. APIs in this module are subject to change without notice.
+  pretrain(config=cfg, forward_step_func=forward_step)
+INFO:megatron.core.datasets.blended_megatron_dataset_config:Let split_matrix = [(0, 0.9990008991907283), (0.9990008991907283, 0.9998001798381456), (0.9998001798381456, 1.0)]
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/transformer/transformer_config.py:1947: UserWarning: full scope is deprecated. Use empty cuda_graph_scope to capture the whole layer.
+  warnings.warn(
+
+======================================================================
+Configuration Summary (Non-Default Values vs Megatron Core)
+======================================================================
+
+[optimizer] Non-default values (vs Mcore OptimizerConfig):
+  adam_beta2: 0.95  (Mcore default: 0.999)
+  bf16: True  (Mcore default: False)
+  fp8_recipe: 'tensorwise'  (Mcore default: None)
+  lr: 0.0003  (Mcore default: None)
+  min_lr: 3e-05  (Mcore default: None)
+  overlap_param_gather: True  (Mcore default: False)
+  params_dtype: torch.bfloat16  (Mcore default: torch.float32)
+  use_distributed_optimizer: True  (Mcore default: False)
+  weight_decay: 0.1  (Mcore default: 0.01)
+
+[ddp] Non-default values (vs Mcore DistributedDataParallelConfig):
+  average_in_collective: True  (Mcore default: False)
+  check_for_nan_in_grad: True  (Mcore default: False)
+  data_parallel_sharding_strategy: 'optim_grads_params'  (Mcore default: 'no_shard')
+  grad_reduce_in_fp32: True  (Mcore default: False)
+  overlap_grad_reduce: True  (Mcore default: False)
+  overlap_param_gather: True  (Mcore default: False)
+  use_distributed_optimizer: True  (Mcore default: False)
+
+[model] Non-default values (vs Mcore TransformerConfig):
+  add_bias_linear: False  (Mcore default: True)
+  attention_backend: None  (Mcore default: <AttnBackend.auto: 5>)
+  attention_dropout: 0.0  (Mcore default: 0.1)
+  attention_softmax_in_fp32: False  (Mcore default: True)
+  autocast_dtype: torch.bfloat16  (Mcore default: None)
+  bf16: True  (Mcore default: False)
+  cross_entropy_fusion_impl: 'te'  (Mcore default: 'native')
+  cross_entropy_loss_fusion: True  (Mcore default: False)
+  cuda_graph_scope: []  (Mcore default: 'full')
+  deallocate_pipeline_outputs: True  (Mcore default: False)
+  embedding_init_method_std: 0.02  (Mcore default: None)
+  expert_tensor_parallel_size: 1  (Mcore default: None)
+  ffn_hidden_size: 3072  (Mcore default: None)
+  fp8_recipe: 'tensorwise'  (Mcore default: 'delayed')
+  gated_linear_unit: True  (Mcore default: False)
+  gradient_accumulation_fusion: True  (Mcore default: False)
+  hidden_dropout: 0.0  (Mcore default: 0.1)
+  hidden_size: 1024  (Mcore default: 0)
+  kv_channels: 128  (Mcore default: None)
+  layernorm_epsilon: 1e-06  (Mcore default: 1e-05)
+  masked_softmax_fusion: True  (Mcore default: False)
+  microbatch_group_size_per_vp_stage: 1  (Mcore default: None)
+  normalization: 'RMSNorm'  (Mcore default: 'LayerNorm')
+  num_attention_heads: 8  (Mcore default: 0)
+  num_layers: 4  (Mcore default: 0)
+  num_layers_at_end_in_bf16: 0  (Mcore default: 1)
+  num_layers_at_start_in_bf16: 0  (Mcore default: 1)
+  num_query_groups: 2  (Mcore default: None)
+  offload_modules: None  (Mcore default: [])
+  params_dtype: torch.bfloat16  (Mcore default: torch.float32)
+  pipeline_dtype: torch.bfloat16  (Mcore default: None)
+  qk_layernorm: True  (Mcore default: False)
+  recompute_modules: ['core_attn']  (Mcore default: None)
+
+----------------------------------------------------------------------
+Other Configuration Values:
+----------------------------------------------------------------------
+
+[train]:
+  check_optimizer_step_success: True
+  decrease_batch_size_if_needed: False
+  empty_unused_memory_level: 0
+  exit_signal: <Signals.SIGTERM: 15>
+  exit_signal_handler: False
+  exit_signal_handler_for_dataloader: False
+  exit_signal_handler_for_training: False
+  global_batch_size: 16
+  iterations_to_skip: []
+  manual_gc: True
+  manual_gc_eval: 100
+  manual_gc_interval: 100
+  micro_batch_size: 1
+  skip_sync_grad_norm_across_mp: False
+  train_iters: 1000
+
+[validation]:
+  eval_interval: 1001
+  eval_iters: 0
+  full_validation: False
+  multiple_validation_sets: False
+  skip_train: False
+  test_mode: False
+
+[scheduler]:
+  end_weight_decay: 0.033
+  lr_decay_iters: 1000
+  lr_decay_steps: 16000
+  lr_decay_style: 'cosine'
+  lr_warmup_init: 0.0
+  lr_warmup_iters: 100
+  lr_warmup_samples: 0
+  lr_warmup_steps: 1600
+  lr_wsd_decay_style: 'minus_sqrt'
+  override_opt_param_scheduler: True
+  start_weight_decay: 0.033
+  use_checkpoint_opt_param_scheduler: False
+  wd_incr_steps: 16000
+  weight_decay_incr_style: 'constant'
+
+[dataset]:
+  add_extra_token_to_sequence: True
+  allow_ambiguous_pad_tokens: False
+  blend: (['/workspace/run/datasets/c4_qwen3'], None)
+  create_attention_mask: True
+  data_parallel_size: 1
+  data_path: '/workspace/run/datasets/c4_qwen3'
+  data_sharding: True
+  dataloader_type: 'single'
+  defer_npy_index_mmap: False
+  drop_last: True
+  drop_last_partial_validation_sequence: True
+  eod_mask_loss: False
+  fast_cache_load: False
+  hybrid_context_parallel: False
+  mid_level_dataset_surplus: 0.005
+  mmap_bin_files: True
+  mock: False
+  num_dataset_builder_threads: 1
+  num_workers: 8
+  persistent_workers: True
+  pin_memory: True
+  random_seed: 1234
+  reset_attention_mask: False
+  reset_position_ids: False
+  sequence_length: 1024
+  sequence_parallel_size: 0
+  split: '9999,8,2'
+  split_matrix: [(0, 0.9990008991907283), (0.9990008991907283, 0.9998001798381456), (0.9998001798381456, 1.0)]
+
+[checkpoint]:
+  async_ckpt_cpu_priority: 10
+  async_ckpt_io_priority: 3
+  async_save: False
+  async_strategy: 'mcore'
+  auto_detect_ckpt_format: False
+  ckpt_assume_constant_structure: False
+  ckpt_convert_update_legacy_dist_opt_format: False
+  ckpt_format: 'torch_dist'
+  ckpt_fully_parallel_load_exchange_algo: 'broadcast'
+  ckpt_fully_parallel_load_process_group: 'dp'
+  ckpt_fully_parallel_save_process_group: 'dp'
+  dist_ckpt_optim_fully_reshardable: False
+  dist_ckpt_save_pre_mcore_014: False
+  dist_ckpt_strictness: 'assume_ok_unexpected'
+  distrib_optim_fully_reshardable_mem_efficient: False
+  exit_on_missing_checkpoint: False
+  finetune: False
+  fully_parallel_load: False
+  fully_parallel_save: True
+  load_main_params_from_ckpt: False
+  load_optim: True
+  load_rng: True
+  most_recent_k: -1
+  non_persistent_local_ckpt_algo: 'fully_parallel'
+  replication: False
+  replication_factor: 2
+  save_interval: 500
+  save_optim: True
+  save_rng: True
+  save_tokenizer_assets: True
+  storage_writers_per_rank: 1
+  strict_fsdp_dtensor_load: False
+  use_checkpoint_args: False
+  use_mp_args_from_checkpoint_args: False
+  use_persistent_ckpt_worker: True
+  use_tokenizer_model_from_checkpoint_args: True
+  verify_integrity: False
+
+[logger]:
+  barrier_with_L1_time: True
+  filter_warnings: True
+  log_device_memory_used: False
+  log_energy: False
+  log_interval: 10
+  log_l2_norm_grad_to_tensorboard: False
+  log_loss_scale_to_tensorboard: True
+  log_max_attention_logit: False
+  log_memory_to_tensorboard: False
+  log_num_zeros_in_grad: False
+  log_params_norm: False
+  log_progress: False
+  log_runtime_to_tensorboard: False
+  log_throughput: False
+  log_throughput_to_tensorboard: False
+  log_timers_to_tensorboard: True
+  log_validation_ppl_to_tensorboard: False
+  log_world_size_to_tensorboard: False
+  logging_level: 20
+  runtime_time_unit: 'hours'
+  set_level_for_all_loggers: False
+  skip_train_metrics_log: False
+  tensorboard_dir: '/workspace/run/tb_logs'
+  tensorboard_log_interval: 1
+  tensorboard_queue_size: 1000
+  throughput_window_size: 100
+  timing_log_level: 0
+  timing_log_option: 'minmax'
+
+[tokenizer]:
+  force_system_message: False
+  hf_tokenizer_kwargs: {}
+  sp_tokenizer_kwargs: {}
+  tiktoken_num_special_tokens: 1000
+  tokenizer_model: 'Qwen/Qwen3-8B'
+  tokenizer_type: 'HuggingFaceTokenizer'
+  vocab_extra_ids: 0
+
+[rng]:
+  data_parallel_random_init: False
+  inference_rng_tracker: False
+  seed: 1234
+  te_rng_tracker: False
+
+======================================================================
+INFO:megatron.bridge.training.utils.log_utils:Setting logging level to 20
+INFO:megatron.core.num_microbatches_calculator:setting number of microbatches to constant 8
+> initializing torch distributed ...
+ip-172-31-41-203:197:197 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+ip-172-31-41-203:197:197 [0] NCCL INFO Bootstrap: Using ens5:172.31.41.203<0>
+ip-172-31-41-203:197:197 [0] NCCL INFO cudaDriverVersion 13020
+ip-172-31-41-203:197:197 [0] NCCL INFO NCCL version 2.29.3+cuda13.1
+ip-172-31-41-203:197:197 [0] NCCL INFO NCCL git version stable dcf2a2fbe
+ip-172-31-41-203:197:197 [0] NCCL INFO Comm config Blocking set to 1
+ip-172-31-41-203:197:197 [0] NCCL INFO NCCL_NET_PLUGIN set by environment to ofi
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/Plugin: Loaded net plugin Libfabric (v11)
+ip-172-31-41-203:197:197 [0] NCCL INFO Successfully loaded external network plugin /opt/amazon/aws-ofi-nccl/lib/libnccl-net-ofi.so
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Initializing aws-ofi-nccl 1.17.3
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Using Libfabric version 2.3
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Using CUDA driver version 13020 with runtime 13010
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI No eligible providers were found
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Selected provider is tcp, fabric is 172.31.32.0/20 (found 1 nics)
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Using transport protocol SENDRECV
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Creating one domain per process
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Support for global registrations: false
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Support for DMA-BUF registrations: false
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Need to force simple protocol: GDR not supported
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI Adding NCCL_PROTO=simple to environment
+ip-172-31-41-203:197:197 [0] NCCL INFO Initialized NET plugin Libfabric
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-41-203:197:197 [0] NCCL INFO Assigned NET plugin Libfabric to comm
+ip-172-31-41-203:197:197 [0] NCCL INFO Using network Libfabric
+ip-172-31-41-203:197:197 [0] NCCL INFO DMA-BUF is available on GPU device 0
+ip-172-31-41-203:197:197 [0] NCCL INFO [Rank 0] ncclCommInitRankConfig comm 0x19a11da0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x4db25858c8a344bf - Init START
+ip-172-31-41-203:197:197 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+ip-172-31-41-203:197:197 [0] NCCL INFO Bootstrap timings total 0.635456 (create 0.000032, send 0.000173, recv 0.633321, ring 0.000376, delay 0.000001)
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-41-203:197:197 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-31).
+ip-172-31-41-203:197:197 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-41-203:197:197 [0] NCCL INFO comm 0x19a11da0 rank 0 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+ip-172-31-41-203:197:197 [0] NCCL INFO Channel 00/02 : 0 1
+ip-172-31-41-203:197:197 [0] NCCL INFO Channel 01/02 : 0 1
+ip-172-31-41-203:197:197 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1
+ip-172-31-41-203:197:197 [0] NCCL INFO P2P Chunksize set to 131072
+ip-172-31-41-203:197:197 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+ip-172-31-41-203:197:197 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+ip-172-31-41-203:197:297 [0] NCCL INFO [Proxy Service] Device 0 CPU core 21
+ip-172-31-41-203:197:298 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 17
+ip-172-31-41-203:197:197 [0] NCCL INFO NCCL_TUNER_PLUGIN set by environment to ofi
+ip-172-31-41-203:197:197 [0] NCCL INFO TUNER/Plugin: Could not find: ofi libnccl-tuner-ofi.so
+ip-172-31-41-203:197:197 [0] NCCL INFO NCCL_PROTO set by environment to simple
+ip-172-31-41-203:197:197 [0] NCCL INFO Enabled NCCL Func/Proto/Algo Matrix:
+     Function |       LL     LL128    Simple   |          Tree           Ring  CollNetDirect   CollNetChain           NVLS       NVLSTree            PAT  
+    Broadcast |        0         0         1   |             1              1              1              1              1              1              1  
+       Reduce |        0         0         1   |             1              1              1              1              1              1              1  
+    AllGather |        0         0         1   |             1              1              1              1              1              1              1  
+ReduceScatter |        0         0         1   |             1              1              1              1              1              1              1  
+    AllReduce |        0         0         1   |             1              1              1              1              1              1              1  
+
+ip-172-31-41-203:197:197 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ip-172-31-41-203:197:197 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 1 p2p channels per peer
+ip-172-31-41-203:197:197 [0] NCCL INFO Symmetric memory is not supported. cuMemEnable 1, ginSupport 0, globalNicFused 0
+ip-172-31-41-203:197:197 [0] NCCL INFO CC Off, workFifoBytes 1048576
+ip-172-31-41-203:197:197 [0] NCCL INFO ncclCommInitRankConfig comm 0x19a11da0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x4db25858c8a344bf - Init COMPLETE
+ip-172-31-41-203:197:197 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 0 nranks 2 total 0.81 (kernels 0.15, alloc 0.02, bootstrap 0.64, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+ip-172-31-41-203:197:299 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 21
+ip-172-31-41-203:197:297 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-41-203:197:197 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [receive] via NET/Libfabric/0
+ip-172-31-41-203:197:297 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-41-203:197:197 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [receive] via NET/Libfabric/0
+ip-172-31-41-203:197:297 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-41-203:197:197 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/Libfabric/0
+ip-172-31-41-203:197:297 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-41-203:197:197 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [send] via NET/Libfabric/0
+ip-172-31-41-203:197:197 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 0
+> initialized tensor model parallel with size 1
+> initialized pipeline model parallel with size 1
+> setting random seeds to 1234 ...
+> compiling dataset index builder ...
+make: Entering directory '/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets'
+g++ -O3 -Wall -shared -std=c++17 -fPIC -fdiagnostics-color -I/usr/include/python3.12 -I/opt/venv/lib/python3.12/site-packages/pybind11/include helpers.cpp -o helpers_cpp.cpython-312-x86_64-linux-gnu.so
+make: Leaving directory '/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets'
+>>> done with dataset index builder. Compilation time: 7.101 seconds
+/usr/local/lib/python3.12/dist-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+time to initialize megatron (seconds): 8.190
+[after megatron is initialized] datetime: 2026-10-04 15:46:56 
+INFO:root:Using preset vocab_size: 151936 over the tokenizer vocab_size: 151669, dummy tokens: 267.
+[after tokenizer is built] datetime: 2026-10-04 15:46:58 
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/models/gpt/gpt_layer_specs.py:209: UserWarning: The fp8 argument in "get_gpt_layer_with_transformer_engine_spec" has been deprecated and will be removed soon. Please update your code accordingly.
+  warnings.warn(
+ > number of parameters on (tensor, pipeline) model parallel rank (0, 0): 359409664
+INFO:megatron.core.distributed.distributed_data_parallel:Setting up DistributedDataParallel with config DistributedDataParallelConfig(grad_reduce_in_fp32=True, overlap_grad_reduce=True, overlap_param_gather=True, align_param_gather=False, use_distributed_optimizer=True, num_distributed_optimizer_instances=1, check_for_nan_in_grad=True, check_for_large_grads=False, bucket_size=40000000, pad_buckets_for_high_nccl_busbw=False, reduce_scatter_with_fp32_accumulation=False, param_name_patterns_for_fp32_local_accumulation=(), average_in_collective=True, fp8_param_gather=False, fp4_param_gather=False, reuse_grad_buf_for_mxfp8_param_ag=False, use_megatron_fsdp=False, use_custom_fsdp=False, data_parallel_sharding_strategy='optim_grads_params', gradient_reduce_div_fusion=True, suggested_communication_unit_size=None, keep_fp8_transpose_cache=False, nccl_ub=False, fsdp_double_buffer=False, fsdp_db_use_persist_buf_on_alloc_fail=False, fsdp_all_gather_in_start_param_sync=True, outer_dp_sharding_strategy='no_shard', disable_symmetric_registration=False, fsdp_manual_registration=False, delay_wgrad_compute=False, megatron_fsdp_main_params_dtype=torch.float32, megatron_fsdp_main_grads_dtype=None, megatron_fsdp_grad_comm_dtype=None)
+INFO:megatron.core.distributed.param_and_grad_buffer:Number of buckets for gradient all-reduce / reduce-scatter: 3
+Params for bucket 1 (155582464 elements, 155582464 padded size, 0 param(s) with extra main_grads):
+	module.output_layer.weight (param.main_grad.dtype=torch.float32)
+Params for bucket 2 (45620992 elements, 45620992 padded size, 0 param(s) with extra main_grads):
+	module.decoder.final_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.3.mlp.linear_fc2.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.3.mlp.linear_fc1.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.3.mlp.linear_fc1.layer_norm_weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.3.self_attention.k_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.3.self_attention.q_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.3.self_attention.linear_qkv.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.3.self_attention.linear_qkv.layer_norm_weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.3.self_attention.linear_proj.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.2.mlp.linear_fc2.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.2.mlp.linear_fc1.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.2.mlp.linear_fc1.layer_norm_weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.2.self_attention.k_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.2.self_attention.q_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.2.self_attention.linear_qkv.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.2.self_attention.linear_qkv.layer_norm_weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.2.self_attention.linear_proj.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.1.mlp.linear_fc2.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.1.mlp.linear_fc1.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.1.mlp.linear_fc1.layer_norm_weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.1.self_attention.k_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.1.self_attention.q_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.1.self_attention.linear_qkv.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.1.self_attention.linear_qkv.layer_norm_weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.1.self_attention.linear_proj.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.0.mlp.linear_fc2.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.0.mlp.linear_fc1.weight (param.main_grad.dtype=torch.float32)
+Params for bucket 3 (158206208 elements, 158206208 padded size, 0 param(s) with extra main_grads):
+	module.decoder.layers.0.mlp.linear_fc1.layer_norm_weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.0.self_attention.k_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.0.self_attention.q_layernorm.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.0.self_attention.linear_qkv.weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.0.self_attention.linear_qkv.layer_norm_weight (param.main_grad.dtype=torch.float32)
+	module.decoder.layers.0.self_attention.linear_proj.weight (param.main_grad.dtype=torch.float32)
+	module.embedding.word_embeddings.weight (param.main_grad.dtype=torch.float32)
+INFO:megatron.core.optimizer:Setting up optimizer with config OptimizerConfig(lr=0.0003, min_lr=3e-05, decoupled_lr=None, decoupled_min_lr=None, weight_decay=0.1, apply_wd_to_qk_layernorm=False, fp8_recipe='tensorwise', fp16=False, bf16=True, reuse_grad_buf_for_mxfp8_param_ag=False, params_dtype=torch.bfloat16, use_precision_aware_optimizer=False, store_param_remainders=True, main_grads_dtype=torch.float32, main_params_dtype=torch.float32, exp_avg_dtype=torch.float32, exp_avg_sq_dtype=torch.float32, optimizer='adam', loss_scale=None, initial_loss_scale=4294967296, min_loss_scale=1.0, loss_scale_window=1000, hysteresis=2, adam_beta1=0.9, adam_beta2=0.95, adam_eps=1e-08, decoupled_weight_decay=True, sgd_momentum=0.9, muon_momentum=0.95, muon_split_qkv=True, muon_use_nesterov=False, muon_scale_mode='spectral', muon_fp32_matmul_prec='medium', muon_coefficient_type='quintic', muon_num_ns_steps=5, muon_tp_mode='blockwise', muon_extra_scale_factor=1.0, muon_scalar_optimizer='adam', lion_beta1=0.95, lion_beta2=0.98, use_distributed_optimizer=True, overlap_param_gather=True, overlap_param_gather_with_optimizer_step=False, optimizer_cpu_offload=False, optimizer_offload_fraction=0.0, use_torch_optimizer_for_cpu_offload=False, overlap_cpu_optimizer_d2h_h2d=False, pin_cpu_grads=True, pin_cpu_params=True, clip_grad=1.0, log_num_zeros_in_grad=False, barrier_with_L1_time=False, timers=<megatron.core.timers.Timers object at 0x78faedf2ef00>, config_logger_dir='', optimizer_cuda_graph=False)
+ip-172-31-41-203:197:197 [0] NCCL INFO Connected binomial trees
+INFO:megatron.core.optimizer_param_scheduler:> learning rate decay style: cosine
+[after model, optimizer, and learning rate scheduler are built] datetime: 2026-10-04 15:46:58 
+> building train, validation, and test datasets ...
+ > datasets target sizes (minimum size):
+    train:      16000
+    validation: 0
+    test:       0
+> building train, validation, and test datasets for GPT ...
+INFO:megatron.core.datasets.blended_megatron_dataset_builder:Building GPTDataset splits with sizes=(16000, 0, 0) and config=GPTDatasetConfig(dataloader_type='single', num_workers=8, data_sharding=True, pin_memory=True, drop_last=True, persistent_workers=True, trust_remote_code=None, random_seed=1234, sequence_length=1024, blend=(['/workspace/run/datasets/c4_qwen3'], None), blend_per_split=None, multiple_validation_sets=None, full_validation=None, split='9999,8,2', split_matrix=[(0, 0.9990008991907283), (0.9990008991907283, 0.9998001798381456), (0.9998001798381456, 1.0)], num_dataset_builder_threads=1, path_to_cache=None, mmap_bin_files=True, mock=False, tokenizer=<megatron.core.tokenizers.text.models.default_tokenizer.DefaultTokenizerText object at 0x78faef5f8e00>, mid_level_dataset_surplus=0.005, allow_ambiguous_pad_tokens=False, fast_cache_load=False, defer_npy_index_mmap=False, reset_position_ids=False, reset_attention_mask=False, eod_mask_loss=False, create_attention_mask=True, drop_last_partial_validation_sequence=True, add_extra_token_to_sequence=True, object_storage_cache_path=None, data_parallel_size=1, sequence_parallel_size=0, hybrid_context_parallel=False, sequences_per_dataset=None, token_dtype_code=None, context_parallel_size=None, data_path='/workspace/run/datasets/c4_qwen3')
+INFO:megatron.core.datasets.indexed_dataset:Load the _IndexReader from /workspace/run/datasets/c4_qwen3.idx
+INFO:megatron.core.datasets.indexed_dataset:	Extract the sequence lengths
+INFO:megatron.core.datasets.indexed_dataset:	Extract the sequence pointers
+INFO:megatron.core.datasets.indexed_dataset:	Extract the document indices
+INFO:megatron.core.datasets.indexed_dataset:> total number of sequences: 12247
+INFO:megatron.core.datasets.indexed_dataset:> total number of documents: 12247
+INFO:megatron.core.datasets.gpt_dataset:Load the GPTDataset train indices
+INFO:megatron.core.datasets.gpt_dataset:	Load the document index from f245ba7ae1d1d6c2d1d1b825d10bf511-GPTDataset-train-document_index.npy
+INFO:megatron.core.datasets.gpt_dataset:	Load the sample index from f245ba7ae1d1d6c2d1d1b825d10bf511-GPTDataset-train-sample_index.npy
+INFO:megatron.core.datasets.gpt_dataset:	Load the shuffle index from f245ba7ae1d1d6c2d1d1b825d10bf511-GPTDataset-train-shuffle_index.npy
+INFO:megatron.core.datasets.gpt_dataset:> total number of samples: 48939
+INFO:megatron.core.datasets.gpt_dataset:Load the GPTDataset valid indices
+INFO:megatron.core.datasets.gpt_dataset:	Load the document index from d962709ffcb6741cf79f5af99a9e24d2-GPTDataset-valid-document_index.npy
+INFO:megatron.core.datasets.gpt_dataset:	Load the sample index from d962709ffcb6741cf79f5af99a9e24d2-GPTDataset-valid-sample_index.npy
+INFO:megatron.core.datasets.gpt_dataset:	Load the shuffle index from d962709ffcb6741cf79f5af99a9e24d2-GPTDataset-valid-shuffle_index.npy
+INFO:megatron.core.datasets.gpt_dataset:> total number of samples: 39

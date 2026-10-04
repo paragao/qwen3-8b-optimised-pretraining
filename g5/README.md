@@ -571,8 +571,13 @@ cause. `g5/finish-run-2node.sh` therefore retrieves **every** rank's log as
 stdout it streamed from each rank, since a rank that dies before writing its
 own logfile leaves no other trace.
 
-The most likely cause on this path is **non-identical datasets**. There is no
-shared filesystem, so each node builds c4 by streaming from the Hub, and two
+**The measured cause of that desync was the Megatron index cache, not the
+datasets.** The next failure mode below has the detail; it is worth reading
+first, because it is the only cause so far observed on this path and it is
+unconditional without a shared filesystem.
+
+A second possible cause is **non-identical datasets**. There is no shared
+filesystem, so each node builds c4 by streaming from the Hub, and two
 independent builds can diverge — a truncated shard, or the rate limit behind
 that `You are sending unauthenticated requests to the HF Hub` warning. Each
 data-parallel rank derives its own sample and shuffle index from its own
@@ -581,7 +586,74 @@ microbatch counts, and therefore different *sequences of collectives*. Checking
 that both files merely **exist** does not catch this; the driver now compares
 size **and** md5 of both files across nodes and refuses to launch on a
 mismatch, which costs two checksums instead of ten minutes of billed silence
-followed by an error that never mentions the dataset.
+followed by an error that never mentions the dataset. This has not yet been
+observed here — on 2026-10-03 and 2026-10-04 the checksums matched and the
+cache was the cause — but the check is cheap and the symptom is identical.
+
+**The fourth failure mode is the one that actually bit: Megatron's index cache
+assumes a shared filesystem, and there is none here.** Rank 1 dies about a
+minute into the run with:
+
+```
+FileNotFoundError: [Errno 2] No such file or directory:
+'/workspace/run/datasets/c4_qwen3/cache/GPTDataset_indices/
+ f245ba7ae1d1d6c2d1d1b825d10bf511-GPTDataset-train-document_index.npy'
+```
+
+while rank 0's log shows it *loading* the very same three files. That asymmetry
+is not a race and not a corrupted copy. It is by design, in
+`megatron/core/datasets/gpt_dataset.py`, where the build branch is guarded by:
+
+```python
+if not path_to_cache or (
+        not cache_hit
+        and (not torch.distributed.is_initialized()
+             or torch.distributed.get_rank() == 0)):
+```
+
+On any rank other than 0 that branch is **unreachable** whenever a cache path
+is set — and one always is, because leaving `path_to_cache` unset makes
+Megatron derive `<data prefix>/cache/GPTDataset_indices`. So rank 1 never
+builds; it always falls through to `numpy.load()`. The builder states the
+assumption in its own comment, in `blended_megatron_dataset_builder.py`:
+
+```python
+# Then, build on other ranks; guaranteed to be data_cache hit
+```
+
+That guarantee holds on a cluster with a shared filesystem. On two independent
+EC2 instances it is false, which makes the failure **unconditional**: it does
+not matter whether the cache is cold on both nodes or warm on one, because rank
+0 is the only rank that can ever create it. Worse, rank 0 gets *past* its own
+build and then blocks on the post-build `torch.distributed.barrier()` waiting
+for a rank that is already dead — which is why this surfaces ten minutes later
+as the `SeqNum=15 ALLREDUCE` timeout above, an error that mentions neither
+datasets nor files.
+
+`g5/finish-run-2node.sh` handles it in two steps:
+
+1. **Pre-sync.** Before launching, it copies node 0's index cache to node 1 and
+   verifies it *on node 1* with `md5sum -c` against node 0's own checksum list.
+   Copying is deliberate: data-parallel ranks must agree on the shuffle index,
+   and a copy makes them identical by construction rather than trusting two
+   hosts' numpy RNG to produce the same permutation. The check uses node 0's
+   file list rather than a whole-directory digest, so entries left from an
+   earlier `TRAIN_ITERS` — which have different hashes in their names and are
+   never read — are not a reason to refuse to start.
+2. **Self-heal.** A cold cache cannot be pre-synced, because nothing but a real
+   run will create it. So if an attempt fails *and* either rank's log carries
+   that `FileNotFoundError`, the driver syncs the cache rank 0 just built and
+   retries **once**. No other failure is retried: this one is self-correcting
+   only because the failed attempt did the useful half.
+
+The indices are keyed by a hash of the dataset path, sequence length, random
+seed and `TRAIN_ITERS × GLOBAL_BATCH_SIZE`, so **changing `TRAIN_ITERS` makes a
+previously warm cache a miss** and costs one self-healed attempt.
+
+`g5/throughput.py` now names this directly rather than reporting a generic
+abort, and the driver parses **every** retrieved rank log instead of rank 0's
+alone — on 2026-10-04 rank 0's log yielded "no explicit failure marker was
+found" while rank 1's held the whole explanation.
 
 **There is no EFA on `g5.8xlarge`.** The same log shows what the all-reduce
 actually runs over:

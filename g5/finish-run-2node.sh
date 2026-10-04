@@ -51,6 +51,14 @@ TRAIN_ITERS="${TRAIN_ITERS:-1000}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-16}"
 NUM_TOKENS="${NUM_TOKENS:-50000000}"
 DATA_PATH="${DATA_PATH:-/workspace/run/datasets/c4_qwen3}"
+# Host-side equivalent of the in-container DATA_PATH: g5/run.sh mounts
+# /home/ubuntu/qwen3-g5/run at /workspace/run, so the two differ only in prefix.
+HOST_DATA="/home/ubuntu/qwen3-g5/run${DATA_PATH#/workspace/run}"
+# Where Megatron keeps the document/sample/shuffle indices. We never set
+# path_to_cache, and gpt_dataset.py then derives it as
+#   os.path.join(self.dataset.path_prefix, "cache", "GPTDataset_indices")
+# so this path is not a guess -- it is the one in rank 1's FileNotFoundError.
+INDEX_CACHE_DIR="${HOST_DATA}/cache/GPTDataset_indices"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -356,7 +364,7 @@ say "Verifying both nodes hold the SAME dataset before spending a run"
 ref_fp=""
 for i in 0 1; do
   set_opts "${i}"
-  host_data="/home/ubuntu/qwen3-g5/run${DATA_PATH#/workspace/run}"
+  host_data="${HOST_DATA}"
   fp=$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" bash -s <<REMOTE || true
 set -u
 b='${host_data}.bin'
@@ -397,92 +405,111 @@ EOF
 done
 echo "    both nodes: checksums MATCH -- data-parallel ranks will index identical data"
 
+# ------------------------------------------ GPTDataset index cache, cross-node
+# Identical .bin/.idx is necessary but NOT sufficient. Megatron builds the
+# document/sample/shuffle indices ON RANK 0 ONLY and expects every other rank
+# to read them back from a SHARED FILESYSTEM. In gpt_dataset.py, inside
+# _build_document_sample_shuffle_indices, the build branch is guarded by
+#
+#   if not path_to_cache or (not cache_hit and (
+#           not torch.distributed.is_initialized()
+#           or torch.distributed.get_rank() == 0)):
+#
+# so on any rank != 0 that branch is UNREACHABLE whenever a cache path is set
+# -- and one always is, because leaving path_to_cache unset makes Megatron
+# derive <data prefix>/cache/GPTDataset_indices. Rank 1 therefore always falls
+# through to numpy.load(). The builder states the assumption itself, in
+# blended_megatron_dataset_builder.py:
+#
+#   # Then, build on other ranks; guaranteed to be data_cache hit
+#
+# These instances have no shared filesystem, so that guarantee is false here
+# and the failure is UNCONDITIONAL: it makes no difference whether the cache is
+# cold on both nodes or warm on one, because rank 1 never builds either way.
+# Rank 1 dies about a minute in with
+#     FileNotFoundError ... <hash>-GPTDataset-train-document_index.npy
+# and rank 0, already past its own build, then blocks on the post-build barrier
+# waiting for a rank that is already dead. Ten minutes later that surfaces as
+#     WorkNCCL(SeqNum=15, OpType=ALLREDUCE, NumelIn=1) ... timed out
+# which says nothing whatsoever about datasets. Both the 2026-10-03 22:14 run
+# and the 2026-10-04 16:43 run failed this way.
+#
+# COPY rank 0's cache rather than building one per node: data-parallel ranks
+# must agree on the shuffle index, and copying makes them identical by
+# construction instead of trusting two hosts' numpy RNG to agree.
+sync_index_cache() {   # 0 = synced and verified, 1 = nothing to copy, 2 = error
+  local relay list n0
+  relay="${KEYDIR}/idxcache"
+  list="${KEYDIR}/idxcache.md5"
+  mkdir -p "${relay}"
+
+  # Take node 0's own checksums first. These are what node 1 is verified
+  # against later, so the verification compares node 1 to node 0 rather than
+  # to anything this driver computed locally.
+  set_opts 0
+  ssh "${OPTS[@]}" "${OS_USER}@${IDS[0]}" \
+    "cd '${INDEX_CACHE_DIR}' 2>/dev/null && md5sum -- * 2>/dev/null || true" \
+    > "${list}" 2>/dev/null || true
+  n0=$(grep -c . "${list}" 2>/dev/null || true)
+  [[ -z "${n0}" ]] && n0=0
+
+  if [[ "${n0}" -eq 0 ]]; then
+    echo "    node 0 has no index cache for this configuration yet."
+    echo "    Nothing to copy: the indices are keyed by a hash of the dataset"
+    echo "    path, sequence length, seed and TRAIN_ITERS x GLOBAL_BATCH_SIZE,"
+    echo "    so changing TRAIN_ITERS makes a previous cache a miss."
+    echo "    Rank 0 will BUILD it during this run; rank 1 cannot, for the"
+    echo "    reason above. This driver detects that exact failure, syncs the"
+    echo "    freshly built cache and retries once."
+    return 1
+  fi
+
+  echo "    node 0 holds ${n0} index file(s) in ${INDEX_CACHE_DIR}"
+  set_opts 0
+  if ! scp "${OPTS[@]}" -q "${OS_USER}@${IDS[0]}:${INDEX_CACHE_DIR}/*" "${relay}/"; then
+    echo "FATAL: could not copy the index cache off node 0." >&2
+    return 2
+  fi
+  echo "    relayed $(ls -1 "${relay}" | wc -l | tr -d ' ') file(s) through this host"
+
+  set_opts 1
+  ssh "${OPTS[@]}" "${OS_USER}@${IDS[1]}" "mkdir -p '${INDEX_CACHE_DIR}'"
+  if ! scp "${OPTS[@]}" -q "${relay}"/* "${OS_USER}@${IDS[1]}:${INDEX_CACHE_DIR}/"; then
+    echo "FATAL: could not copy the index cache onto node 1." >&2
+    return 2
+  fi
+
+  # Verify ON NODE 1, against node 0's checksum list, with `md5sum -c`. This
+  # checks exactly the files node 0 has and ignores any extra ones node 1 may
+  # hold from an earlier TRAIN_ITERS -- those have different hashes in their
+  # names, are never read by this run, and are not a reason to refuse to start.
+  set_opts 1
+  if ssh "${OPTS[@]}" "${OS_USER}@${IDS[1]}" \
+       "cd '${INDEX_CACHE_DIR}' && md5sum -c --quiet" < "${list}" >/dev/null 2>&1; then
+    echo "    node 1: all ${n0} file(s) verified byte-identical to node 0"
+    return 0
+  fi
+  echo "FATAL: the index cache on node 1 does not match node 0 after copying." >&2
+  echo "       Data-parallel ranks must load IDENTICAL indices; a mismatch" >&2
+  echo "       gives them different sample orders, which is silent corruption" >&2
+  echo "       rather than a crash. Refusing to start." >&2
+  return 2
+}
+
+say "Syncing the Megatron index cache from node 0 to node 1"
+CACHE_PRESYNCED=0
+cache_rc=0
+sync_index_cache || cache_rc=$?
+case "${cache_rc}" in
+  0) CACHE_PRESYNCED=1 ;;
+  1) CACHE_PRESYNCED=0 ;;
+  *) exit 1 ;;
+esac
+
 # ----------------------------------------------------------------- the run
 # Rank 1 starts FIRST. torchrun's static rendezvous has rank 0 host the store,
 # and rank 1 retries until it is up -- but starting rank 1 first means neither
 # side is waiting on a process that has not been launched yet.
-# ------------------------------------------------- preflight: clear stale state
-# An interrupted previous run leaves its CONTAINERS RUNNING on both nodes. The
-# local cleanup only closes the ssh control masters, and killing an ssh client
-# does not stop the remote container, so Ctrl-C on a hung run leaves behind:
-#   * rank 0's container holding MASTER_PORT (host networking) -> the next run
-#     dies with "DistNetworkError ... EADDRINUSE ... port: 29500", and rank 1
-#     then fails too because its rendezvous has no server
-#   * both containers holding their GPU, so even a free port would OOM
-# Clear it rather than reporting it: the stale container is never wanted, and
-# leaving the operator to hand-run docker kill on two nodes is the step that
-# gets skipped. Only this image is targeted, so nothing else on the box is hit.
-say "Preflight: clearing any stale run on both nodes"
-for i in 0 1; do
-  set_opts "${i}"
-  stale="$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
-    "docker ps -q --filter ancestor='${CONTAINER_IMAGE}' | wc -l" 2>/dev/null || echo 0)"
-  stale="$(echo "${stale}" | tr -d '[:space:]')"
-  if [[ "${stale}" -gt 0 ]]; then
-    echo "    node ${i}: ${stale} stale container(s) from a previous run -- killing"
-    ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
-      "docker ps -q --filter ancestor='${CONTAINER_IMAGE}' | xargs -r docker kill" \
-      >/dev/null 2>&1 || true
-  else
-    echo "    node ${i}: no stale containers"
-  fi
-done
-
-# Assert the port is actually free rather than assuming the kill worked: a
-# container in a wedged state can survive `docker kill`, and the failure mode
-# we are preventing is precisely a still-bound MASTER_PORT.
-for i in 0 1; do
-  set_opts "${i}"
-  for attempt in 1 2 3 4 5; do
-    in_use="$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
-      "ss -ltn 2>/dev/null | grep -c ':${MASTER_PORT} ' || true" 2>/dev/null || echo 0)"
-    in_use="$(echo "${in_use}" | tr -d '[:space:]')"
-    [[ -z "${in_use}" ]] && in_use=0
-    [[ "${in_use}" -eq 0 ]] && break
-    echo "    node ${i}: ${MASTER_PORT} still bound, waiting (${attempt}/5)"
-    sleep 5
-  done
-  if [[ "${in_use}" -ne 0 ]]; then
-    echo "FATAL: node ${i} still has a listener on ${MASTER_PORT}." >&2
-    echo "       A previous run's container did not die. Inspect it with:" >&2
-    echo "         aws ssm start-session --target ${IDS[$i]} --region ${REGION}" >&2
-    echo "         docker ps ; sudo ss -ltnp | grep ${MASTER_PORT}" >&2
-    exit 1
-  fi
-  echo "    node ${i}: ${MASTER_PORT} is free"
-done
-
-say "Starting the 2-node run (GBS=${GLOBAL_BATCH_SIZE}, ${TRAIN_ITERS} iters)"
-echo "    rendezvous ${MASTER_ADDR}:${MASTER_PORT}, DATA_PATH=${DATA_PATH}"
-echo "    rank 1 starts first so the rendezvous has both ends present"
-
-RUN_ENV="NNODES=2 MASTER_ADDR='${MASTER_ADDR}' MASTER_PORT='${MASTER_PORT}' \
-GLOBAL_BATCH_SIZE='${GLOBAL_BATCH_SIZE}' TRAIN_ITERS='${TRAIN_ITERS}' \
-LOG_INTERVAL='${LOG_INTERVAL:-10}' DATA_PATH='${DATA_PATH}' \
-NUM_LAYERS='${NUM_LAYERS:-}' HIDDEN_SIZE='${HIDDEN_SIZE:-}' \
-FFN_HIDDEN_SIZE='${FFN_HIDDEN_SIZE:-}' \
-NUM_ATTENTION_HEADS='${NUM_ATTENTION_HEADS:-}' \
-NUM_QUERY_GROUPS='${NUM_QUERY_GROUPS:-}' SEQ_LENGTH='${SEQ_LENGTH:-}' \
-MICRO_BATCH_SIZE='${MICRO_BATCH_SIZE:-}'"
-
-RUN_PIDS=()
-RUN_LAUNCHED=1   # from here on, cleanup must stop the remote containers
-for i in 1 0; do
-  set_opts "${i}"
-  ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
-    "cd ${REMOTE_REPO} && ${RUN_ENV} NODE_RANK=${i} ./g5/run.sh" \
-    > "${KEYDIR}/run-${i}.log" 2>&1 &
-  RUN_PIDS[$i]=$!
-  echo "    launched rank ${i} (${IDS[$i]})"
-  [[ "${i}" -eq 1 ]] && sleep 5   # let rank 1 get as far as the rendezvous
-done
-
-# Indexed by rank, so a failure can be ATTRIBUTED rather than just flagged.
-# A hung run produces NO output and `wait` blocks forever, so the nodes bill at
-# ~$4.90/hr until a human notices. That cost 55 minutes on a NCCL bootstrap
-# hang. Watch the two rank logs for growth instead, and abort if both go quiet.
-# Growth is the right signal rather than elapsed time: a legitimate long step
-# still logs, while a network-level hang produces nothing at all.
 # PyTorch's ProcessGroupNCCL watchdog aborts an unmatched collective after its
 # own timeout (600s by default, and NOT settable by environment variable -- it
 # comes from the process group options). When this driver's STALL_TIMEOUT was
@@ -498,94 +525,225 @@ if [[ "${STALL_TIMEOUT}" -ge "${NCCL_COLLECTIVE_TIMEOUT_SEC}" ]]; then
   echo "       this driver never gets to explain why the run hung." >&2
   exit 1
 fi
-stall_abort=0
-last_size=-1
-quiet_for=0
-while :; do
-  any_alive=0
+
+# Run it in up to TWO attempts. The second exists only for the Megatron
+# index-cache failure below, which cannot be prevented on a cold cache: no
+# rank other than 0 will ever build it, and rank 0 only builds it by running.
+for RUN_ATTEMPT in 1 2; do
+  # ------------------------------------------------- preflight: clear stale state
+  # An interrupted previous run leaves its CONTAINERS RUNNING on both nodes. The
+  # local cleanup only closes the ssh control masters, and killing an ssh client
+  # does not stop the remote container, so Ctrl-C on a hung run leaves behind:
+  #   * rank 0's container holding MASTER_PORT (host networking) -> the next run
+  #     dies with "DistNetworkError ... EADDRINUSE ... port: 29500", and rank 1
+  #     then fails too because its rendezvous has no server
+  #   * both containers holding their GPU, so even a free port would OOM
+  # Clear it rather than reporting it: the stale container is never wanted, and
+  # leaving the operator to hand-run docker kill on two nodes is the step that
+  # gets skipped. Only this image is targeted, so nothing else on the box is hit.
+  say "Preflight: clearing any stale run on both nodes"
   for i in 0 1; do
-    kill -0 "${RUN_PIDS[$i]}" 2>/dev/null && any_alive=1
-  done
-  [[ "${any_alive}" -eq 0 ]] && break
-
-  size=0
-  for i in 0 1; do
-    s="$(wc -c < "${KEYDIR}/run-${i}.log" 2>/dev/null || echo 0)"
-    size=$(( size + s ))
-  done
-
-  if [[ "${size}" -eq "${last_size}" ]]; then
-    quiet_for=$(( quiet_for + STALL_POLL ))
-  else
-    quiet_for=0
-    last_size="${size}"
-  fi
-
-  if [[ "${quiet_for}" -ge "${STALL_TIMEOUT}" ]]; then
-    stall_abort=1
-    echo "" >&2
-    echo "FATAL: both ranks produced no output for ${quiet_for}s -- treating this" >&2
-    echo "       as a hang and aborting so the nodes stop billing." >&2
-    echo "" >&2
-    # Two very different failures look identical from the outside, so decide
-    # between them from the logs rather than always blaming the network.
-    # If NCCL never reached "Init COMPLETE" the ranks never connected; if it
-    # did, the transport works and a rank went missing from a later collective.
-    if grep -q "Init COMPLETE" "${KEYDIR}/run-0.log" 2>/dev/null; then
-      nccl_up=yes
-    else
-      nccl_up=no
-    fi
-    if [[ "${nccl_up}" == "no" ]]; then
-      echo "       NCCL never reached 'Init COMPLETE', so the ranks never" >&2
-      echo "       connected. Most likely the security group does not permit" >&2
-      echo "       NCCL's ephemeral inbound ports between the nodes: the" >&2
-      echo "       torchrun rendezvous on ${MASTER_PORT} can succeed while NCCL's" >&2
-      echo "       own bootstrap sockets are dropped, which stalls silently." >&2
-      echo "       Check it with:" >&2
-      echo "         aws ec2 describe-security-groups --group-ids <sg> \\" >&2
-      echo "           --query 'SecurityGroups[0].IpPermissions'" >&2
-      echo "       It must span tcp/1-65535 sourced from the group itself," >&2
-      echo "       which ./g5/fix-cluster-sg.sh converges." >&2
-    else
-      echo "       NCCL DID reach 'Init COMPLETE', so the transport is fine and" >&2
-      echo "       the network is NOT the problem. One rank failed to arrive at" >&2
-      echo "       a collective the others entered -- a rank-side crash or stall." >&2
-      echo "       Look at the OTHER rank's log, not rank 0's: rank 0 only" >&2
-      echo "       records that it waited. Both are saved under g5/results/." >&2
-      echo "       Common causes: the two nodes indexing non-identical datasets," >&2
-      echo "       an out-of-memory kill, or a full disk on one node." >&2
-    fi
-    echo "       Re-run with NCCL_DEBUG=INFO to see the transport NCCL picks." >&2
-    for i in 0 1; do
-      kill "${RUN_PIDS[$i]}" 2>/dev/null || true
-    done
-    # Free the GPUs too: killing the local ssh client does not stop the remote
-    # container, which would keep holding the device on a still-billing node.
-    for i in 0 1; do
-      set_opts "${i}"
+    set_opts "${i}"
+    stale="$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+      "docker ps -q --filter ancestor='${CONTAINER_IMAGE}' | wc -l" 2>/dev/null || echo 0)"
+    stale="$(echo "${stale}" | tr -d '[:space:]')"
+    if [[ "${stale}" -gt 0 ]]; then
+      echo "    node ${i}: ${stale} stale container(s) from a previous run -- killing"
       ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
-        'docker ps -q --filter ancestor=nvcr.io/nvidia/nemo:26.04 | xargs -r docker kill' \
+        "docker ps -q --filter ancestor='${CONTAINER_IMAGE}' | xargs -r docker kill" \
         >/dev/null 2>&1 || true
+    else
+      echo "    node ${i}: no stale containers"
+    fi
+  done
+
+  # Assert the port is actually free rather than assuming the kill worked: a
+  # container in a wedged state can survive `docker kill`, and the failure mode
+  # we are preventing is precisely a still-bound MASTER_PORT.
+  for i in 0 1; do
+    set_opts "${i}"
+    for attempt in 1 2 3 4 5; do
+      in_use="$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+        "ss -ltn 2>/dev/null | grep -c ':${MASTER_PORT} ' || true" 2>/dev/null || echo 0)"
+      in_use="$(echo "${in_use}" | tr -d '[:space:]')"
+      [[ -z "${in_use}" ]] && in_use=0
+      [[ "${in_use}" -eq 0 ]] && break
+      echo "    node ${i}: ${MASTER_PORT} still bound, waiting (${attempt}/5)"
+      sleep 5
     done
+    if [[ "${in_use}" -ne 0 ]]; then
+      echo "FATAL: node ${i} still has a listener on ${MASTER_PORT}." >&2
+      echo "       A previous run's container did not die. Inspect it with:" >&2
+      echo "         aws ssm start-session --target ${IDS[$i]} --region ${REGION}" >&2
+      echo "         docker ps ; sudo ss -ltnp | grep ${MASTER_PORT}" >&2
+      exit 1
+    fi
+    echo "    node ${i}: ${MASTER_PORT} is free"
+  done
+
+  say "Starting the 2-node run (GBS=${GLOBAL_BATCH_SIZE}, ${TRAIN_ITERS} iters)"
+  echo "    rendezvous ${MASTER_ADDR}:${MASTER_PORT}, DATA_PATH=${DATA_PATH}"
+  echo "    rank 1 starts first so the rendezvous has both ends present"
+
+  RUN_ENV="NNODES=2 MASTER_ADDR='${MASTER_ADDR}' MASTER_PORT='${MASTER_PORT}' \
+  GLOBAL_BATCH_SIZE='${GLOBAL_BATCH_SIZE}' TRAIN_ITERS='${TRAIN_ITERS}' \
+  LOG_INTERVAL='${LOG_INTERVAL:-10}' DATA_PATH='${DATA_PATH}' \
+  NUM_LAYERS='${NUM_LAYERS:-}' HIDDEN_SIZE='${HIDDEN_SIZE:-}' \
+  FFN_HIDDEN_SIZE='${FFN_HIDDEN_SIZE:-}' \
+  NUM_ATTENTION_HEADS='${NUM_ATTENTION_HEADS:-}' \
+  NUM_QUERY_GROUPS='${NUM_QUERY_GROUPS:-}' SEQ_LENGTH='${SEQ_LENGTH:-}' \
+  MICRO_BATCH_SIZE='${MICRO_BATCH_SIZE:-}'"
+
+  RUN_PIDS=()
+  RUN_LAUNCHED=1   # from here on, cleanup must stop the remote containers
+  for i in 1 0; do
+    set_opts "${i}"
+    ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+      "cd ${REMOTE_REPO} && ${RUN_ENV} NODE_RANK=${i} ./g5/run.sh" \
+      > "${KEYDIR}/run-${i}.log" 2>&1 &
+    RUN_PIDS[$i]=$!
+    echo "    launched rank ${i} (${IDS[$i]})"
+    [[ "${i}" -eq 1 ]] && sleep 5   # let rank 1 get as far as the rendezvous
+  done
+
+  # Indexed by rank, so a failure can be ATTRIBUTED rather than just flagged.
+  # A hung run produces NO output and `wait` blocks forever, so the nodes bill at
+  # ~$4.90/hr until a human notices. That cost 55 minutes on a NCCL bootstrap
+  # hang. Watch the two rank logs for growth instead, and abort if both go quiet.
+  # Growth is the right signal rather than elapsed time: a legitimate long step
+  # still logs, while a network-level hang produces nothing at all.
+  stall_abort=0
+  last_size=-1
+  quiet_for=0
+  while :; do
+    any_alive=0
+    for i in 0 1; do
+      kill -0 "${RUN_PIDS[$i]}" 2>/dev/null && any_alive=1
+    done
+    [[ "${any_alive}" -eq 0 ]] && break
+
+    size=0
+    for i in 0 1; do
+      s="$(wc -c < "${KEYDIR}/run-${i}.log" 2>/dev/null || echo 0)"
+      size=$(( size + s ))
+    done
+
+    if [[ "${size}" -eq "${last_size}" ]]; then
+      quiet_for=$(( quiet_for + STALL_POLL ))
+    else
+      quiet_for=0
+      last_size="${size}"
+    fi
+
+    if [[ "${quiet_for}" -ge "${STALL_TIMEOUT}" ]]; then
+      stall_abort=1
+      echo "" >&2
+      echo "FATAL: both ranks produced no output for ${quiet_for}s -- treating this" >&2
+      echo "       as a hang and aborting so the nodes stop billing." >&2
+      echo "" >&2
+      # Two very different failures look identical from the outside, so decide
+      # between them from the logs rather than always blaming the network.
+      # If NCCL never reached "Init COMPLETE" the ranks never connected; if it
+      # did, the transport works and a rank went missing from a later collective.
+      if grep -q "Init COMPLETE" "${KEYDIR}/run-0.log" 2>/dev/null; then
+        nccl_up=yes
+      else
+        nccl_up=no
+      fi
+      if [[ "${nccl_up}" == "no" ]]; then
+        echo "       NCCL never reached 'Init COMPLETE', so the ranks never" >&2
+        echo "       connected. Most likely the security group does not permit" >&2
+        echo "       NCCL's ephemeral inbound ports between the nodes: the" >&2
+        echo "       torchrun rendezvous on ${MASTER_PORT} can succeed while NCCL's" >&2
+        echo "       own bootstrap sockets are dropped, which stalls silently." >&2
+        echo "       Check it with:" >&2
+        echo "         aws ec2 describe-security-groups --group-ids <sg> \\" >&2
+        echo "           --query 'SecurityGroups[0].IpPermissions'" >&2
+        echo "       It must span tcp/1-65535 sourced from the group itself," >&2
+        echo "       which ./g5/fix-cluster-sg.sh converges." >&2
+      else
+        echo "       NCCL DID reach 'Init COMPLETE', so the transport is fine and" >&2
+        echo "       the network is NOT the problem. One rank failed to arrive at" >&2
+        echo "       a collective the others entered -- a rank-side crash or stall." >&2
+        echo "       Look at the OTHER rank's log, not rank 0's: rank 0 only" >&2
+        echo "       records that it waited. Both are saved under g5/results/." >&2
+        echo "       Common causes, measured first: the Megatron index cache" >&2
+        echo "       missing on a rank != 0 (grep the other rank's log for" >&2
+        echo "       FileNotFoundError and *-document_index.npy), the two nodes" >&2
+        echo "       indexing non-identical datasets, an out-of-memory kill, or" >&2
+        echo "       a full disk on one node." >&2
+      fi
+      echo "       Re-run with NCCL_DEBUG=INFO to see the transport NCCL picks." >&2
+      for i in 0 1; do
+        kill "${RUN_PIDS[$i]}" 2>/dev/null || true
+      done
+      # Free the GPUs too: killing the local ssh client does not stop the remote
+      # container, which would keep holding the device on a still-billing node.
+      for i in 0 1; do
+        set_opts "${i}"
+        ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+          'docker ps -q --filter ancestor=nvcr.io/nvidia/nemo:26.04 | xargs -r docker kill' \
+          >/dev/null 2>&1 || true
+      done
+      break
+    fi
+
+    sleep "${STALL_POLL}"
+  done
+
+  run_fail=0
+  RUN_STATUS=()
+  for i in 0 1; do
+    st=0
+    wait "${RUN_PIDS[$i]}" || st=$?
+    RUN_STATUS[$i]="${st}"
+    [[ "${st}" -eq 0 ]] || run_fail=1
+  done
+  say "Rank exit status: rank 0 = ${RUN_STATUS[0]}, rank 1 = ${RUN_STATUS[1]}"
+  for i in 0 1; do
+    echo "    --- rank ${i} (last 15 lines) ---"
+    tail -15 "${KEYDIR}/run-${i}.log" | sed 's/^/      /'
+  done
+
+  # ------------------------------------------------- self-heal: index cache
+  if [[ "${run_fail}" -eq 0 ]]; then
     break
   fi
-
-  sleep "${STALL_POLL}"
-done
-
-run_fail=0
-RUN_STATUS=()
-for i in 0 1; do
-  st=0
-  wait "${RUN_PIDS[$i]}" || st=$?
-  RUN_STATUS[$i]="${st}"
-  [[ "${st}" -eq 0 ]] || run_fail=1
-done
-say "Rank exit status: rank 0 = ${RUN_STATUS[0]}, rank 1 = ${RUN_STATUS[1]}"
-for i in 0 1; do
-  echo "    --- rank ${i} (last 15 lines) ---"
-  tail -15 "${KEYDIR}/run-${i}.log" | sed 's/^/      /'
+  if [[ "${RUN_ATTEMPT}" -ge 2 ]]; then
+    echo "    the retry failed too; not retrying again." >&2
+    break
+  fi
+  # Exactly ONE failure is worth retrying automatically. The missing index
+  # cache is self-correcting because the failed attempt did the useful half:
+  # rank 0 BUILT the cache before rank 1 died, so a retry starts from a state
+  # the first attempt could not reach. Every other failure would fail the same
+  # way on two billing nodes, so it is not retried.
+  if ! grep -lE "FileNotFoundError.*(GPTDataset_indices|GPTDataset-[a-z]+-(document|sample|shuffle)_index[.]npy)" \
+        "${KEYDIR}/run-0.log" "${KEYDIR}/run-1.log" >/dev/null 2>&1; then
+    break
+  fi
+  say "A rank died because the Megatron index cache was missing -- self-healing"
+  echo "    This is the shared-filesystem assumption documented above. Rank 0"
+  echo "    has now built the cache, so it can be copied to rank 1 and the run"
+  echo "    retried. Nothing else about the run changes."
+  # Keep the failed attempt's logs: they are the evidence of WHY the retry
+  # happened, and the relaunch below overwrites both run logs in place.
+  a1_stamp="$(date +%Y%m%d-%H%M%S)"
+  mkdir -p g5/results
+  for i in 0 1; do
+    [[ -f "${KEYDIR}/run-${i}.log" ]] || continue
+    cp "${KEYDIR}/run-${i}.log" \
+       "g5/results/run-2node-${a1_stamp}-rank${i}-attempt1.log"
+    echo "    rank ${i}: attempt 1 log kept at g5/results/run-2node-${a1_stamp}-rank${i}-attempt1.log"
+  done
+  cache_rc=0
+  sync_index_cache || cache_rc=$?
+  if [[ "${cache_rc}" -ne 0 ]]; then
+    echo "FATAL: could not sync the index cache, so a retry would fail in the" >&2
+    echo "       same place. Not retrying." >&2
+    break
+  fi
+  say "Retrying the run (attempt 2 of 2), now with the index cache on both nodes"
 done
 
 # --------------------------------------------------------------- results
@@ -612,6 +770,7 @@ REMOTE
 # explanation is always in another rank's log.
 say "Retrieving BOTH ranks' logs"
 stamp="$(date +%Y%m%d-%H%M%S)"
+RETRIEVED=()
 for i in 0 1; do
   set_opts "${i}"
   remote_log=$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
@@ -623,6 +782,7 @@ for i in 0 1; do
   local_log="g5/results/run-2node-${stamp}-rank${i}.log"
   if scp "${OPTS[@]}" -q "${OS_USER}@${IDS[$i]}:${remote_log}" "${local_log}"; then
     echo "    rank ${i}: saved ${local_log} ($(wc -l < "${local_log}" | tr -d ' ') lines)"
+    RETRIEVED[$i]="${local_log}"
     if git check-ignore -q "${local_log}" 2>/dev/null; then
       echo "    WARNING: ${local_log} is gitignored." >&2
     fi
@@ -640,6 +800,26 @@ if [[ "${run_fail}" -ne 0 ]]; then
     streamed="g5/results/run-2node-${stamp}-rank${i}-stdout.log"
     cp "${KEYDIR}/run-${i}.log" "${streamed}"
     echo "    rank ${i}: preserved driver-streamed stdout at ${streamed}"
+  done
+fi
+
+# Rank 0's log is parsed ON THE NODE above, because that is where throughput
+# lives. But in a multi-rank failure rank 0 is usually the rank that merely
+# WAITED, so parsing it alone produces either a symptom or nothing at all --
+# the 2026-10-04 16:43 failure printed "no explicit failure marker was found"
+# from rank 0 while rank 1's log held the FileNotFoundError that explained
+# everything. Parse every retrieved log here and let the output name the rank
+# that actually died, instead of leaving the reader to open files by hand.
+if [[ "${run_fail}" -ne 0 ]]; then
+  say "Diagnosing EVERY rank's log (the failing rank is usually not rank 0)"
+  for i in 0 1; do
+    if [[ -z "${RETRIEVED[$i]:-}" ]]; then
+      echo "    rank ${i}: no log retrieved, nothing to diagnose" >&2
+      continue
+    fi
+    echo "    --- rank ${i}: ${RETRIEVED[$i]} ---"
+    python3 "${HERE}/throughput.py" "${RETRIEVED[$i]}" 2>&1 \
+      | sed 's/^/      /' || true
   done
 fi
 

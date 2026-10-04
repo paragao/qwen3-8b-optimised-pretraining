@@ -1,0 +1,201 @@
+
+====================
+== NeMo Framework ==
+====================
+
+NVIDIA Release  (build 323980803)
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Multiple distributions found for package modelopt. Picked distribution: nvidia-modelopt
+/opt/venv/lib/python3.12/site-packages/modelopt/torch/__init__.py:53: UserWarning: transformers>=5.0 support is experimental. Unified Hugging Face checkpoint export for quantized checkpoints may not work for some models yet.
+  _warnings.warn(
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/models/mimo/config/base_configs.py:12: UserWarning: MimoModelConfig is experimental and still under active development. The API may change without notice in future releases.
+  class MimoModelConfig:
+`torch_dtype` is deprecated! Use `dtype` instead!
+  dataset: real Megatron-indexed data at /workspace/run/datasets/c4_qwen3
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/transformer/transformer_config.py:1947: UserWarning: full scope is deprecated. Use empty cuda_graph_scope to capture the whole layer.
+  warnings.warn(
+INFO:megatron.bridge.training.utils.log_utils:Setting logging level to 20
+ip-172-31-37-92:196:196 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+ip-172-31-37-92:196:196 [0] NCCL INFO cudaDriverVersion 13020
+ip-172-31-37-92:196:196 [0] NCCL INFO Bootstrap: Using ens5:172.31.37.92<0>
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL version 2.29.3+cuda13.1
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL git version stable dcf2a2fbe
+ip-172-31-37-92:196:196 [0] NCCL INFO Comm config Blocking set to 1
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL_NET_PLUGIN set by environment to ofi
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/Plugin: Loaded net plugin Libfabric (v11)
+ip-172-31-37-92:196:196 [0] NCCL INFO Successfully loaded external network plugin /opt/amazon/aws-ofi-nccl/lib/libnccl-net-ofi.so
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Initializing aws-ofi-nccl 1.17.3
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Using Libfabric version 2.3
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Using CUDA driver version 13020 with runtime 13010
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No eligible providers were found
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Selected provider is tcp, fabric is 172.31.32.0/20 (found 1 nics)
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Using transport protocol SENDRECV
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Creating one domain per process
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Support for global registrations: false
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Support for DMA-BUF registrations: false
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Need to force simple protocol: GDR not supported
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Adding NCCL_PROTO=simple to environment
+ip-172-31-37-92:196:196 [0] NCCL INFO Initialized NET plugin Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Assigned NET plugin Libfabric to comm
+ip-172-31-37-92:196:196 [0] NCCL INFO Using network Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO DMA-BUF is available on GPU device 0
+ip-172-31-37-92:196:196 [0] NCCL INFO [Rank 1] ncclCommInitRankConfig comm 0x3c41c530 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x218cabb037ac24c4 - Init START
+ip-172-31-37-92:196:196 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+ip-172-31-37-92:196:196 [0] NCCL INFO Bootstrap timings total 0.002674 (create 0.000045, send 0.000532, recv 0.000970, ring 0.000359, delay 0.000001)
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-31).
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x3c41c530 rank 1 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] 0/-1/-1->1->-1
+ip-172-31-37-92:196:196 [0] NCCL INFO P2P Chunksize set to 131072
+ip-172-31-37-92:196:196 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+ip-172-31-37-92:196:196 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+ip-172-31-37-92:196:295 [0] NCCL INFO [Proxy Service] Device 0 CPU core 14
+ip-172-31-37-92:196:296 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 7
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL_TUNER_PLUGIN set by environment to ofi
+ip-172-31-37-92:196:196 [0] NCCL INFO TUNER/Plugin: Could not find: ofi libnccl-tuner-ofi.so
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL_PROTO set by environment to simple
+ip-172-31-37-92:196:196 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ip-172-31-37-92:196:196 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 1 p2p channels per peer
+ip-172-31-37-92:196:196 [0] NCCL INFO Symmetric memory is not supported. cuMemEnable 1, ginSupport 0, globalNicFused 0
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclCommInitRankConfig comm 0x3c41c530 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x218cabb037ac24c4 - Init COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 1 nranks 2 total 0.18 (kernels 0.15, alloc 0.02, bootstrap 0.00, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+ip-172-31-37-92:196:297 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 3
+ip-172-31-37-92:196:295 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/Libfabric/0
+ip-172-31-37-92:196:295 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [receive] via NET/Libfabric/0
+ip-172-31-37-92:196:295 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/Libfabric/0
+ip-172-31-37-92:196:295 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [send] via NET/Libfabric/0
+ip-172-31-37-92:196:196 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 0
+> compiling dataset index builder ...
+make: Entering directory '/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets'
+g++ -O3 -Wall -shared -std=c++17 -fPIC -fdiagnostics-color -I/usr/include/python3.12 -I/opt/venv/lib/python3.12/site-packages/pybind11/include helpers.cpp -o helpers_cpp.cpython-312-x86_64-linux-gnu.so
+make: Leaving directory '/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets'
+>>> done with dataset index builder. Compilation time: 7.085 seconds
+INFO:root:Using preset vocab_size: 151936 over the tokenizer vocab_size: 151669, dummy tokens: 267.
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/models/gpt/gpt_layer_specs.py:209: UserWarning: The fp8 argument in "get_gpt_layer_with_transformer_engine_spec" has been deprecated and will be removed soon. Please update your code accordingly.
+  warnings.warn(
+ip-172-31-37-92:196:196 [0] NCCL INFO Connected binomial trees
+> setting tensorboard ...
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/workspace/repo/g5/train.py", line 370, in <module>
+[rank1]:     main()
+[rank1]:   File "/workspace/repo/g5/train.py", line 335, in main
+[rank1]:     pretrain(config=cfg, forward_step_func=forward_step)
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/utils/decorators.py", line 39, in wrapper
+[rank1]:     return func(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/pretrain.py", line 98, in pretrain
+[rank1]:     _pretrain(state=state, forward_step_func=forward_step_func, callback_manager=callback_manager)
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/pretrain.py", line 128, in _pretrain
+[rank1]:     setup_output = setup(state, dataset_provider, restart_store=store)
+[rank1]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/setup.py", line 310, in setup
+[rank1]:     train_data_iterator, valid_data_iterator, test_data_iterator = setup_data_iterators(
+[rank1]:                                                                    ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/data/loaders.py", line 443, in setup_data_iterators
+[rank1]:     train_data_iterator, valid_data_iterator, test_data_iterator = build_train_valid_test_data_iterators(
+[rank1]:                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/data/loaders.py", line 368, in build_train_valid_test_data_iterators
+[rank1]:     train_dataloader, valid_dataloader, test_dataloader = build_train_valid_test_data_loaders(
+[rank1]:                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/data/loaders.py", line 196, in build_train_valid_test_data_loaders
+[rank1]:     train_ds, valid_ds, test_ds = build_train_valid_test_datasets(
+[rank1]:                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/data/loaders.py", line 159, in build_train_valid_test_datasets
+[rank1]:     return build_train_valid_test_datasets_provider(train_valid_test_num_samples, cfg.dataset)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/src/megatron/bridge/data/utils.py", line 82, in pretrain_train_valid_test_datasets_provider
+[rank1]:     ).build()
+[rank1]:       ^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets/blended_megatron_dataset_builder.py", line 125, in build
+[rank1]:     datasets = self._build_blended_dataset_splits()
+[rank1]:                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets/blended_megatron_dataset_builder.py", line 169, in _build_blended_dataset_splits
+[rank1]:     return self._build_megatron_dataset_splits(prefixes[0], split, self.sizes)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets/blended_megatron_dataset_builder.py", line 475, in _build_megatron_dataset_splits
+[rank1]:     self.build_generic_dataset(
+[rank1]:   File "/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets/blended_megatron_dataset_builder.py", line 546, in build_generic_dataset
+[rank1]:     dataset = cls(*args)
+[rank1]:               ^^^^^^^^^^
+[rank1]:   File "/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets/gpt_dataset.py", line 144, in __init__
+[rank1]:     self._build_document_sample_shuffle_indices()
+[rank1]:   File "/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets/gpt_dataset.py", line 579, in _build_document_sample_shuffle_indices
+[rank1]:     document_index = numpy.load(path_to_document_index, allow_pickle=True, mmap_mode="r")
+[rank1]:                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/opt/venv/lib/python3.12/site-packages/numpy/lib/npyio.py", line 427, in load
+[rank1]:     fid = stack.enter_context(open(os_fspath(file), "rb"))
+[rank1]:                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]: FileNotFoundError: [Errno 2] No such file or directory: '/workspace/run/datasets/c4_qwen3/cache/GPTDataset_indices/f245ba7ae1d1d6c2d1d1b825d10bf511-GPTDataset-train-document_index.npy'
+[rank1]:[W1004 16:44:12.119817851 ProcessGroupNCCL.cpp:1569] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+ip-172-31-37-92:196:437 [0] NCCL INFO comm 0x3c41c530 rank 1 nRanks 2 cudaDev 0 busId 1e0 - Abort START
+ip-172-31-37-92:196:437 [0] NCCL INFO misc/socket.cc:27 -> 3
+ip-172-31-37-92:196:437 [0] NCCL INFO misc/socket.cc:44 -> 3
+ip-172-31-37-92:196:437 [0] NCCL INFO misc/socket.cc:583 -> 3
+ip-172-31-37-92:196:295 [0] NCCL INFO misc/socket.cc:658 -> 3
+ip-172-31-37-92:196:437 [0] NCCL INFO comm 0x3c41c530 rank 1 nranks 2 cudaDev 0 busId 1e0 - Abort COMPLETE
+ip-172-31-37-92:196:437 [0] NCCL INFO Unloading plugin ofi
+ip-172-31-37-92:196:196 [0] NCCL INFO ENV/Plugin: Closing env plugin ncclEnvDefault
+E1004 16:44:14.846000 1 torch/distributed/elastic/multiprocessing/api.py:984] failed (exitcode: 1) local_rank: 0 (pid: 196) of binary: /opt/venv/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/workspace/repo/g5/train.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-10-04_16:44:14
+  host      : ip-172-31-37-92.us-west-2.compute.internal
+  rank      : 1 (local_rank: 0)
+  exitcode  : 1 (pid: 196)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

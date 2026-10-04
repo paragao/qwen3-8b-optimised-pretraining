@@ -67,6 +67,19 @@ TOKENS_PER_STEP_RE = re.compile(r"tokens per step\s*:\s*([0-9,]+)")
 # format differs from ELAPSED_PATTERNS", which sends the reader to fix a
 # regex that was never the problem.
 FAILURE_MARKERS = (
+    # Listed first because it is the most specific, and because it is the
+    # UPSTREAM cause of the two markers below it: a rank that dies here never
+    # reaches the post-build barrier, so the surviving rank reports a collective
+    # timeout and torchrun reports a child failure. Reporting the generic
+    # symptom first would send the reader looking at the network.
+    (re.compile(
+        r"FileNotFoundError.*(?:GPTDataset_indices"
+        r"|GPTDataset-\w+-(?:document|sample|shuffle)_index\.npy)"),
+     "the Megatron GPTDataset index cache is MISSING on this rank. Megatron "
+     "builds it on rank 0 only and expects every other rank to read it back "
+     "from a SHARED filesystem; these instances have none, so the cache must "
+     "be copied to every node before the run (g5/finish-run-2node.sh does "
+     "this). This is a setup failure, not a data or network failure"),
     (re.compile(r"Watchdog caught collective operation timeout"),
      "a NCCL collective timed out -- some rank never arrived at it (rank desync)"),
     (re.compile(r"CUDA out of memory"),
@@ -109,15 +122,17 @@ def parse_log(path: str) -> dict:
     tokens_per_step: int | None = None
     gbs: int | None = None
     candidates: list[str] = []
-    failures: list[tuple[str, str]] = []
+    failures: list[tuple[int, str, str]] = []
     training_started = False
 
     for line in lines:
         if TRAINING_STARTED_RE.search(line):
             training_started = True
-        for marker, explanation in FAILURE_MARKERS:
-            if marker.search(line) and explanation not in [f[0] for f in failures]:
-                failures.append((explanation, line.rstrip()[:300]))
+        for rank_of_marker, (marker, explanation) in enumerate(FAILURE_MARKERS):
+            if marker.search(line) and explanation not in [f[1] for f in failures]:
+                failures.append(
+                    (rank_of_marker, explanation, line.rstrip()[:300])
+                )
 
         tps_match = TOKENS_PER_STEP_RE.search(line)
         if tps_match and tokens_per_step is None:
@@ -161,7 +176,12 @@ def parse_log(path: str) -> dict:
         "tokens_per_step": tokens_per_step,
         "global_batch_size": gbs,
         "candidates": candidates,
-        "failures": failures,
+        # Ordered by position in FAILURE_MARKERS (most specific first), NOT by
+        # where each matched in the log. A root cause such as the missing index
+        # cache necessarily appears AFTER the "Traceback" line that introduces
+        # it and BEFORE the generic ChildFailedError it provokes, so line order
+        # would bury the only actionable entry between two symptoms.
+        "failures": [(why, line) for _, why, line in sorted(failures)],
         "training_started": training_started,
         "line_count": len(lines),
     }
@@ -280,6 +300,17 @@ def main() -> int:
             f"--warmup {args.warmup}. Nothing left to measure.",
             file=sys.stderr,
         )
+        # A run that logged one iteration and then DIED is not the same thing
+        # as a run that was merely too short, and "nothing left to measure"
+        # reads as the latter. Name the abort if the log proves there was one.
+        if parsed["failures"]:
+            print(
+                "\nThe run did not just stop early -- it ABORTED. The log "
+                "carries explicit failure evidence:",
+                file=sys.stderr,
+            )
+            for explanation, line in parsed["failures"]:
+                print(f"\n  * {explanation}\n      {line}", file=sys.stderr)
         return 2
 
     rates = [tokens_per_step / step["seconds"] for step in steady]
