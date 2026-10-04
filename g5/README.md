@@ -19,6 +19,28 @@ Each g5.8xlarge has exactly **one** A10G (`ec2 describe-instance-types` reports
 `GpuInfo.Gpus[0].Count = 1`, 22888 MiB, 25 Gigabit, `EfaSupported: true`), so
 the node count **is** the data-parallel degree and `nproc_per_node` is always 1.
 
+## Two reproducible scenarios
+
+If you want to *run* something rather than read how it works, start here. Each
+folder holds one pinned geometry, reproducible two ways — directly on EC2, or on
+Kubernetes via `kubectl apply -k` — from a single source of truth.
+
+| | what | measured | EC2 | Kubernetes |
+|---|---|---|---|---|
+| [**`single-node/`**](single-node/README.md) | ~1B params on one A10G, maximum memory | **19.08 GiB (84.8%)**, 7,085 tok/s | `./g5/finish-run.sh` | `kubectl apply -k g5/single-node/` |
+| [**`multi-node/`**](multi-node/README.md) | 2 nodes, DP=2, over EFA | **25,056 tok/s** over EFA (3.10x TCP, 1.01x one node) | `./g5/finish-run-2node.sh` | `kubectl apply -k g5/multi-node/` |
+
+The Kubernetes side of each is a kustomize **overlay** on
+[`eks/`](eks/pretrain.yaml), not a copy, so the base stays the single definition
+of the stack. `./g5/scenario-check.sh` asserts each scenario's two paths still
+describe the same run — two copies of a geometry drift silently, and both files
+stay valid while measuring different models.
+
+Read each folder's README for what is measured and what is predicted. The
+multi-node folder is explicit that its ~1B geometry is **not yet measured**: the
+25,056 tok/s above was recorded on the 4-layer `smoke` shape, which peaked at
+21% of the card, so it validates the fabric and not the memory occupancy.
+
 Both mock and real **c4** data are supported — see
 [Training on the c4 dataset](#training-on-the-c4-dataset). Use real data if you
 care about the loss curve at all; the mock dataset's curve is meaningless.
@@ -158,7 +180,15 @@ measured; `deeper4k` is predicted but not yet run:
 | `deeper` | 7.64 GiB | **9.66 GiB** | 10.03 GiB | 43.0% | **18,793** | **36.7** | **29.4%** |
 | **`1b`** | 16.92 GiB | **19.08 GiB** | 19.43 GiB | **84.8%** | **7,085** | 34.3 | 27.4% |
 | `deeper4k` | 7.64 GiB | not run (predicted 11.14) | — | ~50% | predicted ~17,400 | — | — |
-| `1b2k` | 16.92 GiB | not run (predicted 20.73) | — | ~92% | predicted ~6,800 | — | — |
+| `1b2k` | 16.92 GiB | **RUN -- OOMed** (predicted 20.73) | — | — | — | — | — |
+
+`1b2k` was previously listed here as "not run". It **was** run and it **OOMed**
+([`results/run-20261003-104814.log`](results/run-20261003-104814.log)): it
+completed one iteration, reached 20.05 GiB allocated with **38.25 MiB free**,
+and died trying to allocate 36 MiB. So the `1b` row at 84.8% is the measured
+ceiling for that shape on this card, not a cautious setting with room above it.
+That matters for anyone reading the table for headroom: the prediction of
+20.73 GiB was close, and close is not under.
 
 Percentages are against the A10G's **22.49 GiB total** (`nvidia-smi` reports
 23028 MiB). All four ran 0 skipped and 0 NaN iterations, so the BF16 path is stable on

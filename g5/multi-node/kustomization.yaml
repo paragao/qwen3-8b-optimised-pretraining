@@ -1,0 +1,124 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# SCENARIO 2 on Kubernetes -- two g5.8xlarge over EFA, DP=2, ~1B params.
+#
+#   kubectl apply -k g5/multi-node/
+#
+# An OVERLAY on ../eks, which stays the single definition of the stack. See
+# g5/single-node/kustomization.yaml for why this is a patch and not a copy.
+#
+# THREE THINGS MUST AGREE and this file sets all three, because any one alone
+# is a silent misconfiguration:
+#   NNODES in the ConfigMap          -- what torchrun is told
+#   parallelism/completions on the Job -- how many pods actually start
+#   the EFA resource on the container  -- whether the fabric is reachable
+# NNODES=2 with parallelism=1 hangs at the rendezvous waiting for a pod that
+# was never created; USE_EFA=1 without the resource falls back to TCP and costs
+# 3x, measured.
+#
+# CLUSTER PREREQUISITES beyond the base manifest's (see ../eks/pretrain.yaml):
+#
+#   1. The EFA device plugin, or an EFA-requesting pod stays Pending with
+#      "Insufficient vpc.amazonaws.com/efa":
+#        helm repo add eks https://aws.github.io/eks-charts
+#        helm install aws-efa-k8s-device-plugin --namespace kube-system \
+#          eks/aws-efa-k8s-device-plugin
+#
+#   2. The node group created WITH EFA on its launch template. An EFA
+#      interface cannot be added to a running node, so a node group without it
+#      must be replaced. Confirm the nodes advertise the resource:
+#        kubectl get nodes -o custom-columns=\
+#      NAME:.metadata.name,EFA:.status.allocatable.'vpc\.amazonaws\.com/efa'
+#      An empty column means the pods will never schedule.
+#
+#   3. A security group allowing ALL traffic BOTH WAYS to and from itself. Not
+#      just inbound, and not a CIDR rule: EFA is not IP, so the default
+#      0.0.0.0/0 egress cannot match it. This cost a run on 2026-10-04 --
+#      libfabric selected the efa provider and the handshake then failed with
+#      "Unresponsive receiver (reachable by EFA device but handshake failed)".
+#      g5/fix-cluster-sg.sh converges the equivalent on the direct-EC2 path.
+#
+#   4. Both nodes in ONE subnet and one AZ. Cross-AZ puts every gradient
+#      all-reduce over an AZ boundary, and the all-reduce is already the
+#      limiting factor.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: qwen3-pretrain
+
+resources:
+  - ../eks
+
+patches:
+  # ---------------------------------------------------------------- geometry
+  # MUST match g5/multi-node/scenario.env; scenario-check.sh asserts it.
+  - target:
+      kind: ConfigMap
+      name: qwen3-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: qwen3-config
+        namespace: qwen3-pretrain
+      data:
+        # ~1B parameters: 1,009,385,472. Measured at 19.08 GiB on ONE node;
+        # expected LOWER per rank here because the distributed optimizer
+        # shards ~11.3 GiB of optimizer state across DP=2. Not measured.
+        NUM_LAYERS: "20"
+        HIDDEN_SIZE: "1536"
+        FFN_HIDDEN_SIZE: "4608"
+        NUM_ATTENTION_HEADS: "12"
+        NUM_QUERY_GROUPS: "3"
+        SEQ_LENGTH: "1024"
+        MICRO_BATCH_SIZE: "1"
+        # 16 = 8 sequences per rank at DP=2, matching the single-node per-rank
+        # load. tokens/step is GBS x seq REGARDLESS of node count, so leaving
+        # this at 8 would halve per-rank compute without shrinking the
+        # all-reduce -- measured at ~5% gain, not worth a second node.
+        GLOBAL_BATCH_SIZE: "16"
+        TRAIN_ITERS: "1000"
+        LOG_INTERVAL: "10"
+        NNODES: "2"
+        USE_EFA: "1"
+        # NOT "1". g5's EFA has no rdma-read capability and setting this
+        # aborts both ranks instantly:
+        #   "FI_EFA_USE_DEVICE_RDMA=1 was set by user, but EFA device has no
+        #    rdma-read capability.  Application will abort()."
+        # Left empty, libfabric uses the device's real capability.
+        FI_EFA_USE_DEVICE_RDMA: ""
+
+  # ------------------------------------------------------- two pods, indexed
+  # parallelism AND completions both move: completionMode is Indexed, and the
+  # base's launcher reads JOB_COMPLETION_INDEX as the node rank.
+  - target:
+      kind: Job
+      name: qwen3-pretrain
+    patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: qwen3-pretrain
+        namespace: qwen3-pretrain
+      spec:
+        parallelism: 2
+        completions: 2
+
+  # --------------------------------------------------------- the EFA device
+  # Commented out in the base, because requesting a resource no node advertises
+  # leaves the pod Pending forever -- which is the right default for a
+  # single-node manifest. Here it is required: USE_EFA=1 selects the libfabric
+  # provider, and this makes the device visible to the pod. Setting only the
+  # env var gets you a pod with no device, NCCL silently on TCP, and 3x less
+  # throughput.
+  - target:
+      kind: Job
+      name: qwen3-pretrain
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/resources/requests/vpc.amazonaws.com~1efa
+        value: 1
+      - op: add
+        path: /spec/template/spec/containers/0/resources/limits/vpc.amazonaws.com~1efa
+        value: 1

@@ -1,0 +1,65 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# SCENARIO 1 on Kubernetes -- single g5.8xlarge, ~1B params, 84.8% of the card.
+#
+#   kubectl apply -k g5/single-node/
+#
+# This is an OVERLAY, not a copy. ../eks/pretrain.yaml stays the single
+# definition of the Namespace, ConfigMap, PVC, rendezvous Service, dataset Job
+# and training Job; this file changes only the values that make the scenario.
+# A copy would drift the moment the base is fixed, and the base has been fixed
+# four times this week.
+#
+# `kubectl apply -k` needs no extra tooling -- kustomize is built into kubectl.
+#
+# Cluster prerequisites are the base manifest's, unchanged: an EKS cluster with
+# a g5.8xlarge node group, the NVIDIA device plugin so nodes advertise
+# nvidia.com/gpu, and an RWX StorageClass for the dataset PVC. See the header
+# of ../eks/pretrain.yaml.
+#
+# EFA is deliberately NOT enabled here. At one node there is no inter-node
+# traffic for it to carry, so it would cost an interface and change nothing.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: qwen3-pretrain
+
+resources:
+  - ../eks
+
+# The geometry. These MUST match g5/single-node/scenario.env, which is what the
+# direct-EC2 path reads; g5/scenario-check.sh asserts they do.
+#
+# A strategic-merge PATCH rather than a configMapGenerator: the base's
+# ConfigMap lives in namespace qwen3-pretrain, and a generator with
+# `behavior: merge` cannot match a namespaced resource (it looks for one with
+# an empty namespace and fails with "does not exist; cannot merge or replace").
+# A patch names the namespace explicitly, and leaves every key it does not
+# mention -- REPO_URL, DATA_PATH, the NCCL and EFA knobs -- at the base value.
+patches:
+  - target:
+      kind: ConfigMap
+      name: qwen3-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: qwen3-config
+        namespace: qwen3-pretrain
+      data:
+        # ~1B parameters: 1,009,385,472 measured.
+        NUM_LAYERS: "20"
+        HIDDEN_SIZE: "1536"
+        FFN_HIDDEN_SIZE: "4608"
+        NUM_ATTENTION_HEADS: "12"
+        NUM_QUERY_GROUPS: "3"
+        # 1024 is the measured CEILING, not a default. Seq 2048 at this
+        # geometry OOMed after one iteration with 38 MiB free. Do not raise it.
+        SEQ_LENGTH: "1024"
+        MICRO_BATCH_SIZE: "1"
+        GLOBAL_BATCH_SIZE: "8"
+        TRAIN_ITERS: "50"
+        LOG_INTERVAL: "10"
+        # One node: NNODES must equal the training Job's parallelism.
+        NNODES: "1"

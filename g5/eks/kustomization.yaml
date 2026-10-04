@@ -1,0 +1,26 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Kustomize BASE for the scenario overlays in g5/single-node and g5/multi-node.
+#
+# This exists only so those overlays can say `resources: [../eks]`. Kustomize
+# refuses to reference a FILE outside the kustomization's own directory (it
+# reports "security; file ... is not in or below ..."), but referencing a
+# DIRECTORY that is itself a kustomization is allowed. So this is the smallest
+# file that keeps pretrain.yaml as the single definition of the stack instead
+# of being copied into each scenario.
+#
+# Applying this directory directly still works and gives the base's own
+# defaults -- the 4-layer `smoke` geometry at one node:
+#
+#   kubectl apply -k g5/eks/
+#
+# For the two reproducible scenarios use the overlays instead:
+#
+#   kubectl apply -k g5/single-node/     # ~1B params, 84.8% of one A10G
+#   kubectl apply -k g5/multi-node/      # 2 nodes over EFA
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - pretrain.yaml
