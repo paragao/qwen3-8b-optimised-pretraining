@@ -338,18 +338,64 @@ if [[ "${prep_fail}" -ne 0 ]]; then
   exit 1
 fi
 
-say "Verifying the dataset exists on both nodes before spending a run"
+say "Verifying both nodes hold the SAME dataset before spending a run"
+# Presence is not enough. There is no shared filesystem here, so each node
+# builds c4 independently by streaming from the Hub, and two independent
+# streaming builds CAN diverge (a truncated shard, an unauthenticated-request
+# rate limit, a different stopping point against the token budget).
+#
+# Non-identical data across data-parallel ranks is not a cosmetic problem.
+# Each rank derives its own sample and shuffle index from its own .bin/.idx,
+# so differing files give differing sample counts, differing microbatch
+# counts, and therefore DIFFERENT SEQUENCES OF COLLECTIVES. The ranks then
+# desync and one waits on a collective the other never issues, which NCCL
+# reports 600s later as an opaque "WorkNCCL(SeqNum=N) timed out" -- with no
+# hint that the datasets were the cause. Catch it here instead, for the price
+# of two checksums, because the alternative is 10 minutes of billed silence
+# followed by a misleading error.
+ref_fp=""
 for i in 0 1; do
   set_opts "${i}"
   host_data="/home/ubuntu/qwen3-g5/run${DATA_PATH#/workspace/run}"
-  if ! ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
-      "test -f '${host_data}.bin' && test -f '${host_data}.idx'"; then
+  fp=$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" bash -s <<REMOTE || true
+set -u
+b='${host_data}.bin'
+x='${host_data}.idx'
+test -f "\$b" && test -f "\$x" || { echo MISSING; exit 0; }
+printf '%s %s %s %s' \
+  "\$(stat -c %s "\$b")" "\$(stat -c %s "\$x")" \
+  "\$(md5sum "\$b" | cut -d' ' -f1)" "\$(md5sum "\$x" | cut -d' ' -f1)"
+REMOTE
+)
+  if [[ -z "${fp}" || "${fp}" == "MISSING" ]]; then
     echo "FATAL: node ${i} has no dataset at ${host_data}.{bin,idx}." >&2
     echo "       Training would silently fall back to the MOCK dataset." >&2
     exit 1
   fi
-  echo "    node ${i}: ${host_data}.{bin,idx} present"
+  # read, not `set --`: `set --` would clobber the script's own positional
+  # parameters, which the instance-id arguments are still read from.
+  bin_sz=""; idx_sz=""; bin_md5=""; idx_md5=""
+  read -r bin_sz idx_sz bin_md5 idx_md5 <<EOF
+${fp}
+EOF
+  echo "    node ${i}: .bin ${bin_sz} bytes (md5 ${bin_md5:0:12}), .idx ${idx_sz} bytes (md5 ${idx_md5:0:12})"
+  if [[ -z "${ref_fp}" ]]; then
+    ref_fp="${fp}"
+  elif [[ "${ref_fp}" != "${fp}" ]]; then
+    echo "" >&2
+    echo "FATAL: the two nodes hold DIFFERENT datasets." >&2
+    echo "       node 0 : ${ref_fp}" >&2
+    echo "       node ${i} : ${fp}" >&2
+    echo "       Data-parallel ranks must index byte-identical data, or they" >&2
+    echo "       compute different sample counts, issue different sequences of" >&2
+    echo "       collectives, and hang in NCCL ~600s later with an error that" >&2
+    echo "       says nothing about the dataset." >&2
+    echo "       Rebuild on both nodes so the checksums match:" >&2
+    echo "         ./g5/prepare-c4.sh      # on each node" >&2
+    exit 1
+  fi
 done
+echo "    both nodes: checksums MATCH -- data-parallel ranks will index identical data"
 
 # ----------------------------------------------------------------- the run
 # Rank 1 starts FIRST. torchrun's static rendezvous has rank 0 host the store,
@@ -437,8 +483,21 @@ done
 # hang. Watch the two rank logs for growth instead, and abort if both go quiet.
 # Growth is the right signal rather than elapsed time: a legitimate long step
 # still logs, while a network-level hang produces nothing at all.
-STALL_TIMEOUT="${STALL_TIMEOUT:-600}"   # seconds of total silence before abort
+# PyTorch's ProcessGroupNCCL watchdog aborts an unmatched collective after its
+# own timeout (600s by default, and NOT settable by environment variable -- it
+# comes from the process group options). When this driver's STALL_TIMEOUT was
+# also 600 the two timers were a dead heat, NCCL won, and the run died with a
+# SIGABRT backtrace instead of this script's diagnosis. So keep a deliberate
+# margin and ASSERT it, rather than leaving the ordering to chance.
+NCCL_COLLECTIVE_TIMEOUT_SEC=600         # torch default; mirrored here, not set by us
+STALL_TIMEOUT="${STALL_TIMEOUT:-420}"   # seconds of total silence before abort
 STALL_POLL=30
+if [[ "${STALL_TIMEOUT}" -ge "${NCCL_COLLECTIVE_TIMEOUT_SEC}" ]]; then
+  echo "FATAL: STALL_TIMEOUT=${STALL_TIMEOUT}s must be BELOW NCCL's collective" >&2
+  echo "       timeout of ${NCCL_COLLECTIVE_TIMEOUT_SEC}s, or NCCL aborts first and" >&2
+  echo "       this driver never gets to explain why the run hung." >&2
+  exit 1
+fi
 stall_abort=0
 last_size=-1
 quiet_for=0
@@ -467,14 +526,36 @@ while :; do
     echo "" >&2
     echo "FATAL: both ranks produced no output for ${quiet_for}s -- treating this" >&2
     echo "       as a hang and aborting so the nodes stop billing." >&2
-    echo "       Most likely cause: the security group does not permit NCCL's" >&2
-    echo "       ephemeral inbound ports between the nodes. The torchrun" >&2
-    echo "       rendezvous on ${MASTER_PORT} can succeed while NCCL's own" >&2
-    echo "       bootstrap sockets are dropped, which stalls silently." >&2
-    echo "       Check it with:" >&2
-    echo "         aws ec2 describe-security-groups --group-ids <sg> \\" >&2
-    echo "           --query 'SecurityGroups[0].IpPermissions'" >&2
-    echo "       It must span tcp/1-65535 sourced from the group itself." >&2
+    echo "" >&2
+    # Two very different failures look identical from the outside, so decide
+    # between them from the logs rather than always blaming the network.
+    # If NCCL never reached "Init COMPLETE" the ranks never connected; if it
+    # did, the transport works and a rank went missing from a later collective.
+    if grep -q "Init COMPLETE" "${KEYDIR}/run-0.log" 2>/dev/null; then
+      nccl_up=yes
+    else
+      nccl_up=no
+    fi
+    if [[ "${nccl_up}" == "no" ]]; then
+      echo "       NCCL never reached 'Init COMPLETE', so the ranks never" >&2
+      echo "       connected. Most likely the security group does not permit" >&2
+      echo "       NCCL's ephemeral inbound ports between the nodes: the" >&2
+      echo "       torchrun rendezvous on ${MASTER_PORT} can succeed while NCCL's" >&2
+      echo "       own bootstrap sockets are dropped, which stalls silently." >&2
+      echo "       Check it with:" >&2
+      echo "         aws ec2 describe-security-groups --group-ids <sg> \\" >&2
+      echo "           --query 'SecurityGroups[0].IpPermissions'" >&2
+      echo "       It must span tcp/1-65535 sourced from the group itself," >&2
+      echo "       which ./g5/fix-cluster-sg.sh converges." >&2
+    else
+      echo "       NCCL DID reach 'Init COMPLETE', so the transport is fine and" >&2
+      echo "       the network is NOT the problem. One rank failed to arrive at" >&2
+      echo "       a collective the others entered -- a rank-side crash or stall." >&2
+      echo "       Look at the OTHER rank's log, not rank 0's: rank 0 only" >&2
+      echo "       records that it waited. Both are saved under g5/results/." >&2
+      echo "       Common causes: the two nodes indexing non-identical datasets," >&2
+      echo "       an out-of-memory kill, or a full disk on one node." >&2
+    fi
     echo "       Re-run with NCCL_DEBUG=INFO to see the transport NCCL picks." >&2
     for i in 0 1; do
       kill "${RUN_PIDS[$i]}" 2>/dev/null || true
@@ -524,16 +605,42 @@ echo
 python3 ${REMOTE_REPO}/g5/throughput.py "\${log}" || true
 REMOTE
 
-say "Retrieving rank 0's log"
-remote_log=$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[0]}" \
-  'ls -t /home/ubuntu/qwen3-g5/run/logs/*.log 2>/dev/null | head -1')
-if [[ -n "${remote_log}" ]]; then
-  local_log="g5/results/run-2node-$(date +%Y%m%d-%H%M%S).log"
-  scp "${OPTS[@]}" -q "${OS_USER}@${IDS[0]}:${remote_log}" "${local_log}"
-  echo "    saved: ${local_log}"
-  if git check-ignore -q "${local_log}" 2>/dev/null; then
-    echo "    WARNING: ${local_log} is gitignored." >&2
+# Retrieve EVERY rank's log, not just rank 0's. In a collective timeout the
+# rank that FAILED TO ARRIVE holds the cause, and rank 0 only ever records
+# that it waited. Keeping rank 0 alone is keeping the wrong half: a
+# "SeqNum=N ALLREDUCE timed out" line on rank 0 is a symptom whose
+# explanation is always in another rank's log.
+say "Retrieving BOTH ranks' logs"
+stamp="$(date +%Y%m%d-%H%M%S)"
+for i in 0 1; do
+  set_opts "${i}"
+  remote_log=$(ssh "${OPTS[@]}" "${OS_USER}@${IDS[$i]}" \
+    'ls -t /home/ubuntu/qwen3-g5/run/logs/*.log 2>/dev/null | head -1' || true)
+  if [[ -z "${remote_log}" ]]; then
+    echo "    WARNING: no log found on rank ${i} (${IDS[$i]})" >&2
+    continue
   fi
+  local_log="g5/results/run-2node-${stamp}-rank${i}.log"
+  if scp "${OPTS[@]}" -q "${OS_USER}@${IDS[$i]}:${remote_log}" "${local_log}"; then
+    echo "    rank ${i}: saved ${local_log} ($(wc -l < "${local_log}" | tr -d ' ') lines)"
+    if git check-ignore -q "${local_log}" 2>/dev/null; then
+      echo "    WARNING: ${local_log} is gitignored." >&2
+    fi
+  else
+    echo "    WARNING: could not copy rank ${i}'s log from ${remote_log}" >&2
+  fi
+done
+
+# The driver streams each rank's stdout into KEYDIR, which the cleanup trap
+# deletes. That stream is the ONLY record of a rank that died before writing
+# its own logfile, so preserve both copies when the run failed.
+if [[ "${run_fail}" -ne 0 ]]; then
+  for i in 0 1; do
+    [[ -f "${KEYDIR}/run-${i}.log" ]] || continue
+    streamed="g5/results/run-2node-${stamp}-rank${i}-stdout.log"
+    cp "${KEYDIR}/run-${i}.log" "${streamed}"
+    echo "    rank ${i}: preserved driver-streamed stdout at ${streamed}"
+  done
 fi
 
 say "Done"

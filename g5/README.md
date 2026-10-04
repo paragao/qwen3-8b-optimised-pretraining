@@ -513,10 +513,16 @@ converge it without launching anything:
 Two guards now exist for this failure mode: `g5/launch-instance.sh` asserts the
 range spans the ephemeral ports before it launches, and
 `g5/finish-run-2node.sh` aborts the run (and kills the remote containers) after
-`STALL_TIMEOUT` seconds — default 600 — of *both* rank logs producing no output
-at all, so a network-level hang costs ten minutes of billing rather than
-however long it takes someone to notice. Multi-node runs also default
-`NCCL_DEBUG=INFO`, because at `WARN` a transport hang prints nothing.
+`STALL_TIMEOUT` seconds — default 420 — of *both* rank logs producing no output
+at all, so a network-level hang costs seven minutes of billing rather than
+however long it takes someone to notice. 420 is **below** PyTorch's own 600 s
+collective timeout on purpose: when both were 600 the two timers were a dead
+heat, NCCL's watchdog won, and the run died with a `SIGABRT` backtrace instead
+of this driver's explanation. That timeout comes from the process group's
+options and is **not** settable by environment variable, so the margin is
+enforced on the shell side — the script refuses to start if `STALL_TIMEOUT` is
+raised to 600 or beyond. Multi-node runs also default `NCCL_DEBUG=INFO`,
+because at `WARN` a transport hang prints nothing.
 
 **If a previous 2-node run was interrupted, the next one fails with
 `EADDRINUSE`.** Killing the local ssh client does not stop the *remote*
@@ -535,6 +541,63 @@ nodes in a preflight, then **asserts** `MASTER_PORT` is actually free (retrying
 five times) and refuses to launch if a wedged container survived `docker kill`.
 Its cleanup trap also stops the remote containers on *any* exit, Ctrl-C
 included, so the state stops accumulating in the first place.
+
+**A third failure looks like a network hang and is not one.** Once the security
+group is correct, NCCL comes up cleanly and a run can still die like this:
+
+```
+WorkNCCL(SeqNum=15, OpType=ALLREDUCE, NumelIn=1, NumelOut=1, Timeout(ms)=600000)
+ran for 600070 milliseconds before timing out.
+Last enqueued NCCL work: 15, last completed NCCL work: 14
+```
+
+Read the NCCL log before blaming the network. If it contains
+`ncclCommInitRankConfig ... Init COMPLETE` and `Connected all rings`, the
+transport is **working** — those lines require the peer to participate. What
+failed is a **rank desync**: one rank entered a collective the other never
+reached. A 1-element `ALLREDUCE` is a `torch.distributed.barrier()`, and the
+timestamp arithmetic locates it precisely: the collective above was enqueued
+600,070 ms before it was caught, which lands on the `[after model, optimizer,
+and learning rate scheduler are built]` line — Megatron's barrier at the
+model-setup → data-setup boundary.
+
+Rank 0's log is misleading on its own here, in two ways. First, it keeps
+logging *after* the collective that times out, because a NCCL barrier's
+`wait()` synchronises the CUDA stream rather than the CPU thread, so rank 0
+runs ahead while the GPU-side barrier sits unmatched. Second, rank 0 only ever
+records that it *waited*; the rank that failed to arrive is the one holding the
+cause. `g5/finish-run-2node.sh` therefore retrieves **every** rank's log as
+`results/run-2node-<stamp>-rank<N>.log`, and on failure also preserves the
+stdout it streamed from each rank, since a rank that dies before writing its
+own logfile leaves no other trace.
+
+The most likely cause on this path is **non-identical datasets**. There is no
+shared filesystem, so each node builds c4 by streaming from the Hub, and two
+independent builds can diverge — a truncated shard, or the rate limit behind
+that `You are sending unauthenticated requests to the HF Hub` warning. Each
+data-parallel rank derives its own sample and shuffle index from its own
+`.bin`/`.idx`, so differing files give differing sample counts, differing
+microbatch counts, and therefore different *sequences of collectives*. Checking
+that both files merely **exist** does not catch this; the driver now compares
+size **and** md5 of both files across nodes and refuses to launch on a
+mismatch, which costs two checksums instead of ten minutes of billed silence
+followed by an error that never mentions the dataset.
+
+**There is no EFA on `g5.8xlarge`.** The same log shows what the all-reduce
+actually runs over:
+
+```
+NET/OFI No eligible providers were found
+NET/OFI Selected provider is tcp, fabric is 172.31.32.0/20 (found 1 nics)
+NET/OFI Need to force simple protocol: GDR not supported
+```
+
+So inter-node traffic is plain TCP over `ens5` with no GPUDirect, and
+`NCCL_PROTO=simple` is forced. Both scaling tables above assume EFA, so on this
+instance type they are not merely optimistic ceilings — the fabric they assume
+is **absent**, and the real figures will fall short of them by more than the
+overlap assumption alone would explain. EFA needs an instance type that offers
+it (`g5.48xlarge`, `p4d`, `p5`) plus an `IpProtocol=-1` self-referencing rule.
 
 Then on **each** node — identical except `NODE_RANK`, and `MASTER_ADDR` is
 rank 0's **private** address on both (the launcher prints the exact commands):
@@ -609,7 +672,12 @@ amortising the same all-reduce over twice the work:
 | `deeper` | 32,768 | 18,793 | 37,589 | **2.00x** |
 
 Both tables assume EFA **and** perfect overlap of the all-reduce with the
-backward pass, so treat them as **ceilings, not forecasts**. Reproduce the
+backward pass, so treat them as **ceilings, not forecasts**. On `g5.8xlarge`
+specifically the first assumption is now known to be **false**: a 2-node run's
+NCCL log reports `NET/OFI No eligible providers were found` and falls back to
+`Selected provider is tcp` with `GDR not supported`, so the all-reduce runs
+over plain TCP on `ens5`. Expect to fall short of these numbers by more than
+the overlap assumption alone accounts for. Reproduce the
 derivation from the measured figures in
 [`results/validation-run.md`](results/validation-run.md). Note that scaling the
 batch changes the optimisation (larger effective batch), so a 2-node run is not

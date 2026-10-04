@@ -62,6 +62,37 @@ LOSS_RE = re.compile(r"lm loss:\s*([0-9]*\.?[0-9]+(?:[eE][+\-]?\d+)?)")
 GBS_RE = re.compile(r"global batch size:\s*(\d+)")
 TOKENS_PER_STEP_RE = re.compile(r"tokens per step\s*:\s*([0-9,]+)")
 
+# Evidence that the job ABORTED, as opposed to evidence that these patterns
+# are wrong. Without this distinction a crashed run is reported as "the log
+# format differs from ELAPSED_PATTERNS", which sends the reader to fix a
+# regex that was never the problem.
+FAILURE_MARKERS = (
+    (re.compile(r"Watchdog caught collective operation timeout"),
+     "a NCCL collective timed out -- some rank never arrived at it (rank desync)"),
+    (re.compile(r"CUDA out of memory"),
+     "CUDA ran out of memory"),
+    (re.compile(r"torch\.distributed\.DistNetworkError"),
+     "a torch.distributed network error (rendezvous could not be established)"),
+    (re.compile(r"ChildFailedError"),
+     "torchrun reported a worker process failure"),
+    (re.compile(r"Signal 6 \(SIGABRT\)|exitcode: -6"),
+     "a worker was killed by SIGABRT (usually the NCCL watchdog aborting)"),
+    (re.compile(r"Traceback \(most recent call last\)"),
+     "an unhandled Python exception"),
+)
+
+# A line proving the training loop was actually entered. If this is absent the
+# run never got as far as a single step, so zero timings is the CORRECT
+# result and not a parsing failure.
+TRAINING_STARTED_RE = re.compile(
+    r"\[before the start of training step\]|elapsed time per iteration"
+)
+
+# A line that genuinely looks like Megatron's per-iteration record. Used to
+# tell a real format change apart from an incidental mention of the word
+# "iteration" in a config echo such as "iterations_to_skip: []".
+REAL_ITER_LINE_RE = re.compile(r"iteration\s+\d+\s*/|elapsed time per iteration")
+
 
 def parse_log(path: str) -> dict:
     """Extract per-iteration timings and the token geometry from a log file."""
@@ -78,8 +109,16 @@ def parse_log(path: str) -> dict:
     tokens_per_step: int | None = None
     gbs: int | None = None
     candidates: list[str] = []
+    failures: list[tuple[str, str]] = []
+    training_started = False
 
     for line in lines:
+        if TRAINING_STARTED_RE.search(line):
+            training_started = True
+        for marker, explanation in FAILURE_MARKERS:
+            if marker.search(line) and explanation not in [f[0] for f in failures]:
+                failures.append((explanation, line.rstrip()[:300]))
+
         tps_match = TOKENS_PER_STEP_RE.search(line)
         if tps_match and tokens_per_step is None:
             tokens_per_step = int(tps_match.group(1).replace(",", ""))
@@ -122,6 +161,8 @@ def parse_log(path: str) -> dict:
         "tokens_per_step": tokens_per_step,
         "global_batch_size": gbs,
         "candidates": candidates,
+        "failures": failures,
+        "training_started": training_started,
         "line_count": len(lines),
     }
 
@@ -150,26 +191,74 @@ def main() -> int:
     steps = parsed["steps"]
 
     if not steps:
+        real_iter_lines = [c for c in parsed["candidates"] if REAL_ITER_LINE_RE.search(c)]
+
+        # Decide between three genuinely different situations instead of
+        # always blaming the patterns. Getting this wrong costs the reader a
+        # debugging session on the wrong file.
+        if parsed["failures"]:
+            print(
+                f"FATAL: no throughput to report -- the run in {args.logfile} ABORTED "
+                f"before completing any training step ({parsed['line_count']} lines scanned).",
+                file=sys.stderr,
+            )
+            print(
+                "\nThis is NOT a parsing problem: zero steps is the correct reading. "
+                "The log carries explicit failure evidence:",
+                file=sys.stderr,
+            )
+            for explanation, line in parsed["failures"]:
+                print(f"\n  * {explanation}\n      {line}", file=sys.stderr)
+            if not parsed["training_started"]:
+                print(
+                    "\nThe training loop was never entered (no 'before the start of "
+                    "training step' marker), so the failure is in setup, not in training.",
+                    file=sys.stderr,
+                )
+            print(
+                "\nFor a multi-rank run, read EVERY rank's log: a collective timeout on "
+                "one rank only records that it waited, and the rank that failed to "
+                "arrive is the one holding the cause.",
+                file=sys.stderr,
+            )
+            return 2
+
+        if real_iter_lines:
+            print(
+                f"FATAL: no per-iteration timing lines matched in {args.logfile} "
+                f"({parsed['line_count']} lines scanned).",
+                file=sys.stderr,
+            )
+            print(
+                "Lines that DO look like iteration records are present, so the Megatron "
+                "log format differs from the patterns in ELAPSED_PATTERNS. Fix the regex "
+                "against these:",
+                file=sys.stderr,
+            )
+            for line in real_iter_lines:
+                print(f"  {line}", file=sys.stderr)
+            return 2
+
         print(
-            f"FATAL: no per-iteration timing lines matched in {args.logfile} "
-            f"({parsed['line_count']} lines scanned).",
+            f"FATAL: no throughput to report -- no training step completed in "
+            f"{args.logfile} ({parsed['line_count']} lines scanned).",
             file=sys.stderr,
         )
         print(
-            "This means the Megatron log format differs from the patterns in "
-            "ELAPSED_PATTERNS, not that throughput was zero.",
+            "\nNo line resembling a Megatron per-iteration record appears, and no "
+            "explicit failure marker was found either. The run most likely stopped "
+            "during setup, or was killed from outside (a timeout, an abort, or an "
+            "out-of-band kill leaves no traceback in this log).",
             file=sys.stderr,
         )
         if parsed["candidates"]:
-            print("\nLines mentioning 'iteration' (fix the regex against these):", file=sys.stderr)
-            for line in parsed["candidates"]:
-                print(f"  {line}", file=sys.stderr)
-        else:
             print(
-                "\nNo lines mentioned 'iteration' at all -- the run probably died "
-                "before the training loop started.",
+                "\nLines mentioning 'iteration' (none of these is a timing record -- "
+                "they are config echoes):",
                 file=sys.stderr,
             )
+            for line in parsed["candidates"]:
+                print(f"  {line}", file=sys.stderr)
         return 2
 
     tokens_per_step = args.tokens_per_step or parsed["tokens_per_step"]
