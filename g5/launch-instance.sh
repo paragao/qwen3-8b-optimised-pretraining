@@ -266,6 +266,30 @@ if [[ "${NODES}" -gt 1 ]]; then
   else
     echo "    already present, or add failed; the assertion below will decide"
   fi
+
+  # EFA ALSO needs a self-referencing OUTBOUND rule. The default egress rule is
+  # 0.0.0.0/0, a CIDR -- and EFA is not IP, so a CIDR rule cannot match EFA
+  # traffic. AWS states it plainly: "the self-referencing inbound AND OUTBOUND
+  # rules ... are mandatory for EFA to function. Without these rules, EFA
+  # traffic between instances will be blocked and NCCL communication will
+  # fail." Missing it cost a run on 2026-10-04: libfabric selected the efa
+  # provider and the handshake then failed with
+  #   Error: 4126 (Unresponsive receiver (reachable by EFA device but
+  #   handshake failed) ... Peer host id: N/A)
+  # which reads like a network fault and is a dropped egress packet.
+  #
+  # ADDITIVE: the 0.0.0.0/0 egress is deliberately left in place, because the
+  # nodes need outbound internet for the ~77 GB image pull and the c4 download.
+  if [[ "${USE_EFA}" -eq 1 ]]; then
+    if aws ec2 authorize-security-group-egress \
+        --group-id "${SG_ID}" \
+        --ip-permissions "IpProtocol=-1,UserIdGroupPairs=[{GroupId=${SG_ID},Description=\"${RDZV_DESC}\"}]" \
+        >/dev/null 2>&1; then
+      echo "    added the OUTBOUND self-referencing rule (required for EFA)"
+    else
+      echo "    outbound self-referencing rule already present"
+    fi
+  fi
 fi
 
 # Assert the invariant rather than trusting it: a stale SG could carry ingress
@@ -326,6 +350,24 @@ EOF
       exit 1
     fi
     echo "    verified: 1 ingress rule, ALL protocols, source = ${SG_ID} (self), no CIDRs"
+    # The egress check is the one the 2026-10-04 EFA failure needed: ingress was
+    # already ALL-protocol self-referencing and the handshake still failed,
+    # because the only egress rule was the default 0.0.0.0/0 CIDR, which cannot
+    # match non-IP EFA traffic.
+    SELF_EGRESS="$(aws ec2 describe-security-groups --group-ids "${SG_ID}" \
+      --query "length(SecurityGroups[0].IpPermissionsEgress[?IpProtocol=='-1'] | [?UserIdGroupPairs[?GroupId=='${SG_ID}']])" \
+      --output text)"
+    if [[ "${SELF_EGRESS}" -lt 1 ]]; then
+      echo "FATAL: no self-referencing ALL-protocol EGRESS rule on ${SG_ID}." >&2
+      echo "       The default 0.0.0.0/0 egress does NOT carry EFA traffic --" >&2
+      echo "       EFA is not IP, so a CIDR rule cannot match it. Without this" >&2
+      echo "       the efa provider is selected and the handshake then fails" >&2
+      echo "       with 'Unresponsive receiver (reachable by EFA device but" >&2
+      echo "       handshake failed)'. Converge it with:" >&2
+      echo "         ./g5/fix-cluster-sg.sh" >&2
+      exit 1
+    fi
+    echo "    verified: self-referencing ALL-protocol egress present (EFA needs it)"
   else
     if [[ "${RULE_PROTO}" != "tcp" || "${RULE_FROM}" -gt 1024 || "${RULE_TO}" -lt 65535 ]]; then
       echo "FATAL: ingress rule is ${RULE_PROTO}/${RULE_FROM}-${RULE_TO}; it must span" >&2

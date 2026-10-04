@@ -1,0 +1,457 @@
+
+====================
+== NeMo Framework ==
+====================
+
+NVIDIA Release  (build 323980803)
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Multiple distributions found for package modelopt. Picked distribution: nvidia-modelopt
+/opt/venv/lib/python3.12/site-packages/modelopt/torch/__init__.py:53: UserWarning: transformers>=5.0 support is experimental. Unified Hugging Face checkpoint export for quantized checkpoints may not work for some models yet.
+  _warnings.warn(
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/models/mimo/config/base_configs.py:12: UserWarning: MimoModelConfig is experimental and still under active development. The API may change without notice in future releases.
+  class MimoModelConfig:
+========================================================================
+Qwen3 single-GPU stack validation (g5.8xlarge / A10G)
+========================================================================
+  device                : NVIDIA A10G (22.1 GiB)
+  torch / cuda          : 2.11.0a0+eb65b36914.nv26.02 / 13.1
+  compute capability    : sm_86
+  --- architecture: proxy vs Qwen3-8B reference ---
+  num_layers            : 4        (Qwen3-8B: 36)
+  hidden_size           : 1024     (Qwen3-8B: 4096)
+  ffn_hidden_size       : 3072     (Qwen3-8B: 12288)
+  num_attention_heads   : 8        (Qwen3-8B: 32)
+  num_query_groups      : 2        (Qwen3-8B: 8)
+  seq_length            : 1024     (Qwen3-8B: 4096)
+  vocab_size            : 151936   (Qwen3-8B: 151936)  <- unchanged
+  --- parameters ---
+  embedding + LM head   :     311.2 M
+  transformer layers    :      48.2 M
+  TOTAL                 :     359.4 M
+  --- static memory estimate (18 B/param, Adam + FP32 master) ---
+  optimizer+weights     :      6.02 GiB
+  of device total        :      27.3 %
+========================================================================
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+`torch_dtype` is deprecated! Use `dtype` instead!
+  data parallel size    : 2
+  grad accum per rank   : 8
+  NOTE: at fixed GLOBAL_BATCH_SIZE, adding a node halves per-rank compute but
+        NOT the gradient all-reduce, so throughput barely improves. Scale
+        GLOBAL_BATCH_SIZE with the node count (=16) for real gains.
+  dataset: real Megatron-indexed data at /workspace/run/datasets/c4_qwen3
+  tokens per step       : 16,384 (16 seq x 1024 tok)
+  train_iters           : 1000
+/workspace/repo/g5/train.py:335: UserWarning: Function 'pretrain' is experimental. APIs in this module are subject to change without notice.
+  pretrain(config=cfg, forward_step_func=forward_step)
+INFO:megatron.core.datasets.blended_megatron_dataset_config:Let split_matrix = [(0, 0.9990008991907283), (0.9990008991907283, 0.9998001798381456), (0.9998001798381456, 1.0)]
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/transformer/transformer_config.py:1947: UserWarning: full scope is deprecated. Use empty cuda_graph_scope to capture the whole layer.
+  warnings.warn(
+
+======================================================================
+Configuration Summary (Non-Default Values vs Megatron Core)
+======================================================================
+
+[optimizer] Non-default values (vs Mcore OptimizerConfig):
+  adam_beta2: 0.95  (Mcore default: 0.999)
+  bf16: True  (Mcore default: False)
+  fp8_recipe: 'tensorwise'  (Mcore default: None)
+  lr: 0.0003  (Mcore default: None)
+  min_lr: 3e-05  (Mcore default: None)
+  overlap_param_gather: True  (Mcore default: False)
+  params_dtype: torch.bfloat16  (Mcore default: torch.float32)
+  use_distributed_optimizer: True  (Mcore default: False)
+  weight_decay: 0.1  (Mcore default: 0.01)
+
+[ddp] Non-default values (vs Mcore DistributedDataParallelConfig):
+  average_in_collective: True  (Mcore default: False)
+  check_for_nan_in_grad: True  (Mcore default: False)
+  data_parallel_sharding_strategy: 'optim_grads_params'  (Mcore default: 'no_shard')
+  grad_reduce_in_fp32: True  (Mcore default: False)
+  overlap_grad_reduce: True  (Mcore default: False)
+  overlap_param_gather: True  (Mcore default: False)
+  use_distributed_optimizer: True  (Mcore default: False)
+
+[model] Non-default values (vs Mcore TransformerConfig):
+  add_bias_linear: False  (Mcore default: True)
+  attention_backend: None  (Mcore default: <AttnBackend.auto: 5>)
+  attention_dropout: 0.0  (Mcore default: 0.1)
+  attention_softmax_in_fp32: False  (Mcore default: True)
+  autocast_dtype: torch.bfloat16  (Mcore default: None)
+  bf16: True  (Mcore default: False)
+  cross_entropy_fusion_impl: 'te'  (Mcore default: 'native')
+  cross_entropy_loss_fusion: True  (Mcore default: False)
+  cuda_graph_scope: []  (Mcore default: 'full')
+  deallocate_pipeline_outputs: True  (Mcore default: False)
+  embedding_init_method_std: 0.02  (Mcore default: None)
+  expert_tensor_parallel_size: 1  (Mcore default: None)
+  ffn_hidden_size: 3072  (Mcore default: None)
+  fp8_recipe: 'tensorwise'  (Mcore default: 'delayed')
+  gated_linear_unit: True  (Mcore default: False)
+  gradient_accumulation_fusion: True  (Mcore default: False)
+  hidden_dropout: 0.0  (Mcore default: 0.1)
+  hidden_size: 1024  (Mcore default: 0)
+  kv_channels: 128  (Mcore default: None)
+  layernorm_epsilon: 1e-06  (Mcore default: 1e-05)
+  masked_softmax_fusion: True  (Mcore default: False)
+  microbatch_group_size_per_vp_stage: 1  (Mcore default: None)
+  normalization: 'RMSNorm'  (Mcore default: 'LayerNorm')
+  num_attention_heads: 8  (Mcore default: 0)
+  num_layers: 4  (Mcore default: 0)
+  num_layers_at_end_in_bf16: 0  (Mcore default: 1)
+  num_layers_at_start_in_bf16: 0  (Mcore default: 1)
+  num_query_groups: 2  (Mcore default: None)
+  offload_modules: None  (Mcore default: [])
+  params_dtype: torch.bfloat16  (Mcore default: torch.float32)
+  pipeline_dtype: torch.bfloat16  (Mcore default: None)
+  qk_layernorm: True  (Mcore default: False)
+  recompute_modules: ['core_attn']  (Mcore default: None)
+
+----------------------------------------------------------------------
+Other Configuration Values:
+----------------------------------------------------------------------
+
+[train]:
+  check_optimizer_step_success: True
+  decrease_batch_size_if_needed: False
+  empty_unused_memory_level: 0
+  exit_signal: <Signals.SIGTERM: 15>
+  exit_signal_handler: False
+  exit_signal_handler_for_dataloader: False
+  exit_signal_handler_for_training: False
+  global_batch_size: 16
+  iterations_to_skip: []
+  manual_gc: True
+  manual_gc_eval: 100
+  manual_gc_interval: 100
+  micro_batch_size: 1
+  skip_sync_grad_norm_across_mp: False
+  train_iters: 1000
+
+[validation]:
+  eval_interval: 1001
+  eval_iters: 0
+  full_validation: False
+  multiple_validation_sets: False
+  skip_train: False
+  test_mode: False
+
+[scheduler]:
+  end_weight_decay: 0.033
+  lr_decay_iters: 1000
+  lr_decay_steps: 16000
+  lr_decay_style: 'cosine'
+  lr_warmup_init: 0.0
+  lr_warmup_iters: 100
+  lr_warmup_samples: 0
+  lr_warmup_steps: 1600
+  lr_wsd_decay_style: 'minus_sqrt'
+  override_opt_param_scheduler: True
+  start_weight_decay: 0.033
+  use_checkpoint_opt_param_scheduler: False
+  wd_incr_steps: 16000
+  weight_decay_incr_style: 'constant'
+
+[dataset]:
+  add_extra_token_to_sequence: True
+  allow_ambiguous_pad_tokens: False
+  blend: (['/workspace/run/datasets/c4_qwen3'], None)
+  create_attention_mask: True
+  data_parallel_size: 1
+  data_path: '/workspace/run/datasets/c4_qwen3'
+  data_sharding: True
+  dataloader_type: 'single'
+  defer_npy_index_mmap: False
+  drop_last: True
+  drop_last_partial_validation_sequence: True
+  eod_mask_loss: False
+  fast_cache_load: False
+  hybrid_context_parallel: False
+  mid_level_dataset_surplus: 0.005
+  mmap_bin_files: True
+  mock: False
+  num_dataset_builder_threads: 1
+  num_workers: 8
+  persistent_workers: True
+  pin_memory: True
+  random_seed: 1234
+  reset_attention_mask: False
+  reset_position_ids: False
+  sequence_length: 1024
+  sequence_parallel_size: 0
+  split: '9999,8,2'
+  split_matrix: [(0, 0.9990008991907283), (0.9990008991907283, 0.9998001798381456), (0.9998001798381456, 1.0)]
+
+[checkpoint]:
+  async_ckpt_cpu_priority: 10
+  async_ckpt_io_priority: 3
+  async_save: False
+  async_strategy: 'mcore'
+  auto_detect_ckpt_format: False
+  ckpt_assume_constant_structure: False
+  ckpt_convert_update_legacy_dist_opt_format: False
+  ckpt_format: 'torch_dist'
+  ckpt_fully_parallel_load_exchange_algo: 'broadcast'
+  ckpt_fully_parallel_load_process_group: 'dp'
+  ckpt_fully_parallel_save_process_group: 'dp'
+  dist_ckpt_optim_fully_reshardable: False
+  dist_ckpt_save_pre_mcore_014: False
+  dist_ckpt_strictness: 'assume_ok_unexpected'
+  distrib_optim_fully_reshardable_mem_efficient: False
+  exit_on_missing_checkpoint: False
+  finetune: False
+  fully_parallel_load: False
+  fully_parallel_save: True
+  load_main_params_from_ckpt: False
+  load_optim: True
+  load_rng: True
+  most_recent_k: -1
+  non_persistent_local_ckpt_algo: 'fully_parallel'
+  replication: False
+  replication_factor: 2
+  save_interval: 500
+  save_optim: True
+  save_rng: True
+  save_tokenizer_assets: True
+  storage_writers_per_rank: 1
+  strict_fsdp_dtensor_load: False
+  use_checkpoint_args: False
+  use_mp_args_from_checkpoint_args: False
+  use_persistent_ckpt_worker: True
+  use_tokenizer_model_from_checkpoint_args: True
+  verify_integrity: False
+
+[logger]:
+  barrier_with_L1_time: True
+  filter_warnings: True
+  log_device_memory_used: False
+  log_energy: False
+  log_interval: 10
+  log_l2_norm_grad_to_tensorboard: False
+  log_loss_scale_to_tensorboard: True
+  log_max_attention_logit: False
+  log_memory_to_tensorboard: False
+  log_num_zeros_in_grad: False
+  log_params_norm: False
+  log_progress: False
+  log_runtime_to_tensorboard: False
+  log_throughput: False
+  log_throughput_to_tensorboard: False
+  log_timers_to_tensorboard: True
+  log_validation_ppl_to_tensorboard: False
+  log_world_size_to_tensorboard: False
+  logging_level: 20
+  runtime_time_unit: 'hours'
+  set_level_for_all_loggers: False
+  skip_train_metrics_log: False
+  tensorboard_dir: '/workspace/run/tb_logs'
+  tensorboard_log_interval: 1
+  tensorboard_queue_size: 1000
+  throughput_window_size: 100
+  timing_log_level: 0
+  timing_log_option: 'minmax'
+
+[tokenizer]:
+  force_system_message: False
+  hf_tokenizer_kwargs: {}
+  sp_tokenizer_kwargs: {}
+  tiktoken_num_special_tokens: 1000
+  tokenizer_model: 'Qwen/Qwen3-8B'
+  tokenizer_type: 'HuggingFaceTokenizer'
+  vocab_extra_ids: 0
+
+[rng]:
+  data_parallel_random_init: False
+  inference_rng_tracker: False
+  seed: 1234
+  te_rng_tracker: False
+
+======================================================================
+INFO:megatron.bridge.training.utils.log_utils:Setting logging level to 20
+INFO:megatron.core.num_microbatches_calculator:setting number of microbatches to constant 8
+> initializing torch distributed ...
+ip-172-31-15-129:197:197 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+ip-172-31-15-129:197:197 [0] NCCL INFO Bootstrap: Using ens5:172.31.15.129<0>
+ip-172-31-15-129:197:197 [0] NCCL INFO cudaDriverVersion 13020
+ip-172-31-15-129:197:197 [0] NCCL INFO NCCL version 2.29.3+cuda13.1
+ip-172-31-15-129:197:197 [0] NCCL INFO NCCL git version stable dcf2a2fbe
+ip-172-31-15-129:197:197 [0] NCCL INFO Comm config Blocking set to 1
+ip-172-31-15-129:197:197 [0] NCCL INFO NCCL_NET_PLUGIN set by environment to ofi
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/Plugin: Loaded net plugin Libfabric (v11)
+ip-172-31-15-129:197:197 [0] NCCL INFO Successfully loaded external network plugin /opt/amazon/aws-ofi-nccl/lib/libnccl-net-ofi.so
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Initializing aws-ofi-nccl 1.17.3
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Using Libfabric version 2.3
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Using CUDA driver version 13020 with runtime 13010
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 1 nics)
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI NIC group 0 device #0 0000:00:1d.0
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 1 nics)
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Using transport protocol SENDRECV
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Creating one domain per process
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Could not disable CUDA API usage for HMEM, disabling GDR
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Support for global registrations: false
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Support for DMA-BUF registrations: false
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Need to force simple protocol: GDR not supported
+ip-172-31-15-129:197:197 [0] NCCL INFO NET/OFI Adding NCCL_PROTO=simple to environment
+ip-172-31-15-129:197:197 [0] NCCL INFO Initialized NET plugin Libfabric
+ip-172-31-15-129:197:197 [0] NCCL INFO Assigned NET plugin Libfabric to comm
+ip-172-31-15-129:197:197 [0] NCCL INFO Using network Libfabric
+ip-172-31-15-129:197:197 [0] NCCL INFO DMA-BUF is available on GPU device 0
+ip-172-31-15-129:197:197 [0] NCCL INFO [Rank 0] ncclCommInitRankConfig comm 0x37c1dcf0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0xe3ecb2961b05fa5a - Init START
+ip-172-31-15-129:197:197 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+ip-172-31-15-129:197:197 [0] NCCL INFO Bootstrap timings total 0.001464 (create 0.000047, send 0.000145, recv 0.000344, ring 0.000285, delay 0.000002)
+ip-172-31-15-129:197:197 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-31).
+ip-172-31-15-129:197:197 [0] NCCL INFO comm 0x37c1dcf0 rank 0 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+ip-172-31-15-129:197:197 [0] NCCL INFO Channel 00/02 : 0 1
+ip-172-31-15-129:197:197 [0] NCCL INFO Channel 01/02 : 0 1
+ip-172-31-15-129:197:197 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1
+ip-172-31-15-129:197:197 [0] NCCL INFO P2P Chunksize set to 131072
+ip-172-31-15-129:197:197 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+ip-172-31-15-129:197:197 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+ip-172-31-15-129:197:297 [0] NCCL INFO [Proxy Service] Device 0 CPU core 9
+ip-172-31-15-129:197:298 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 1
+ip-172-31-15-129:197:197 [0] NCCL INFO NCCL_TUNER_PLUGIN set by environment to ofi
+ip-172-31-15-129:197:197 [0] NCCL INFO TUNER/Plugin: Could not find: ofi libnccl-tuner-ofi.so
+ip-172-31-15-129:197:197 [0] NCCL INFO NCCL_PROTO set by environment to simple
+ip-172-31-15-129:197:197 [0] NCCL INFO Enabled NCCL Func/Proto/Algo Matrix:
+     Function |       LL     LL128    Simple   |          Tree           Ring  CollNetDirect   CollNetChain           NVLS       NVLSTree            PAT  
+    Broadcast |        0         0         1   |             1              1              1              1              1              1              1  
+       Reduce |        0         0         1   |             1              1              1              1              1              1              1  
+    AllGather |        0         0         1   |             1              1              1              1              1              1              1  
+ReduceScatter |        0         0         1   |             1              1              1              1              1              1              1  
+    AllReduce |        0         0         1   |             1              1              1              1              1              1              1  
+
+ip-172-31-15-129:197:197 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ip-172-31-15-129:197:197 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 1 p2p channels per peer
+ip-172-31-15-129:197:197 [0] NCCL INFO Symmetric memory is not supported. cuMemEnable 1, ginSupport 0, globalNicFused 0
+ip-172-31-15-129:197:197 [0] NCCL INFO CC Off, workFifoBytes 1048576
+ip-172-31-15-129:197:197 [0] NCCL INFO ncclCommInitRankConfig comm 0x37c1dcf0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0xe3ecb2961b05fa5a - Init COMPLETE
+ip-172-31-15-129:197:197 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 0 nranks 2 total 0.21 (kernels 0.15, alloc 0.05, bootstrap 0.00, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+ip-172-31-15-129:197:299 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 9
+ip-172-31-15-129:197:197 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [receive] via NET/Libfabric/0
+ip-172-31-15-129:197:197 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [receive] via NET/Libfabric/0
+ip-172-31-15-129:197:197 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/Libfabric/0
+ip-172-31-15-129:197:197 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [send] via NET/Libfabric/0
+
+[2026-10-04 20:33:20] ip-172-31-15-129:197:297 [0] int cm_req_handle_error_entry(nccl_net_ofi_context_t*, fid_cq*, fi_cq_err_entry*, uint16_t):46 NCCL WARN NET/OFI Request 0x71da50203820 completed with error. RC: 103. Error: 4126 (Unresponsive receiver (reachable by EFA device but handshake failed) My EFA addr: fi_addr_efa://[fe80::8ff:f7ff:fefc:bc43]:0:1879318055 My host id: i-0ced6067e009b3f7e Peer EFA addr: fi_addr_efa://[fe80::8ff:e2ff:fe9a:b815]:0:102020407 Peer host id: N/A). Completed length: 0
+ip-172-31-15-129:197:297 [0] NCCL INFO transport/net.cc:860 -> 6
+ip-172-31-15-129:197:197 [0] NCCL INFO transport.cc:212 -> 6
+
+[2026-10-04 20:33:20] ip-172-31-15-129:197:297 [0] int cm_req_handle_error_entry(nccl_net_ofi_context_t*, fid_cq*, fi_cq_err_entry*, uint16_t):46 NCCL WARN NET/OFI Request 0x71da50205b50 completed with error. RC: 103. Error: 4126 (Unresponsive receiver (reachable by EFA device but handshake failed) My EFA addr: fi_addr_efa://[fe80::8ff:f7ff:fefc:bc43]:0:1879318055 My host id: i-0ced6067e009b3f7e Peer EFA addr: fi_addr_efa://[fe80::8ff:e2ff:fe9a:b815]:0:102020407 Peer host id: N/A). Completed length: 0
+ip-172-31-15-129:197:297 [0] NCCL INFO transport/net.cc:1026 -> 6
+ip-172-31-15-129:197:197 [0] NCCL INFO transport/generic.cc:27 -> 6
+ip-172-31-15-129:197:197 [0] NCCL INFO group.cc:151 -> 6
+ip-172-31-15-129:197:197 [0] NCCL INFO group.cc:211 -> 6
+ip-172-31-15-129:197:197 [0] NCCL INFO group.cc:78 -> 6 [Async thread]
+ip-172-31-15-129:197:197 [0] NCCL INFO group.cc:625 -> 6
+ip-172-31-15-129:197:197 [0] NCCL INFO group.cc:781 -> 6
+ip-172-31-15-129:197:197 [0] NCCL INFO enqueue.cc:3014 -> 6
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/workspace/repo/g5/train.py", line 370, in <module>
+[rank0]:     main()
+[rank0]:   File "/workspace/repo/g5/train.py", line 335, in main
+[rank0]:     pretrain(config=cfg, forward_step_func=forward_step)
+[rank0]:   File "/opt/Megatron-Bridge/src/megatron/bridge/utils/decorators.py", line 39, in wrapper
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/pretrain.py", line 98, in pretrain
+[rank0]:     _pretrain(state=state, forward_step_func=forward_step_func, callback_manager=callback_manager)
+[rank0]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/pretrain.py", line 128, in _pretrain
+[rank0]:     setup_output = setup(state, dataset_provider, restart_store=store)
+[rank0]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/setup.py", line 142, in setup
+[rank0]:     pg_collection = initialize_megatron(
+[rank0]:                     ^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/initialize.py", line 123, in initialize_megatron
+[rank0]:     result = torch_dist_init(
+[rank0]:              ^^^^^^^^^^^^^^^^
+[rank0]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/initialize.py", line 229, in torch_dist_init
+[rank0]:     pg_collection = finish_mpu_init()
+[rank0]:                     ^^^^^^^^^^^^^^^^^
+[rank0]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/initialize.py", line 189, in finish_mpu_init
+[rank0]:     pg_collection = _initialize_distributed(
+[rank0]:                     ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/opt/Megatron-Bridge/src/megatron/bridge/training/initialize.py", line 648, in _initialize_distributed
+[rank0]:     torch.distributed.barrier(device_ids=[get_local_rank_preinit()])
+[rank0]:   File "/usr/local/lib/python3.12/dist-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/usr/local/lib/python3.12/dist-packages/torch/distributed/distributed_c10d.py", line 4968, in barrier
+[rank0]:     work = group.barrier(opts=opts)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]: torch.distributed.DistBackendError: NCCL error in: /opt/pytorch/pytorch/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp:3770, remote process exited or there was a network error, NCCL version 2.29.3
+[rank0]: ncclRemoteError: A call failed possibly due to a network error or a remote process exiting prematurely.
+[rank0]: Last error:
+[rank0]: NET/OFI Request 0x71da50205b50 completed with error. RC: 103. Error: 4126 (Unresponsive receiver (reachable by EFA device but handshake failed) My EFA addr: fi_addr_efa://[fe80::8ff:f7ff:fefc:bc43]:0:1879318055 My host id: i-0ced6067e009b3f7e Peer EFA addr: fi_addr_efa://[fe80::8ff:e2ff:fe9a:b815]:0:102020407 Peer host id: N/A). Completed length: 0
+[rank0]:[W1004 20:33:21.688059766 ProcessGroupNCCL.cpp:1569] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+ip-172-31-15-129:197:300 [0] NCCL INFO comm 0x37c1dcf0 rank 0 nRanks 2 cudaDev 0 busId 1e0 - Abort START
+
+[2026-10-04 20:33:21] ip-172-31-15-129:197:297 [0] proxy.cc:1714 NCCL WARN [Service thread] Error encountered progressing operation=Connect, res=3, closing connection
+ip-172-31-15-129:197:300 [0] NCCL INFO misc/socket.cc:27 -> 3
+ip-172-31-15-129:197:300 [0] NCCL INFO misc/socket.cc:44 -> 3
+ip-172-31-15-129:197:300 [0] NCCL INFO misc/socket.cc:583 -> 3
+
+[2026-10-04 20:33:21] ip-172-31-15-129:197:297 [0] ncclResult_t nccl_net_ofi_closeRecv_v2(void*):886 NCCL WARN NET/OFI Invalid communicator object provided
+ip-172-31-15-129:197:297 [0] NCCL INFO transport/net.cc:1210 -> 3
+ip-172-31-15-129:197:297 [0] NCCL INFO proxy.cc:1090 -> 3
+ip-172-31-15-129:197:297 [0] NCCL INFO proxy.cc:1102 -> 3
+ip-172-31-15-129:197:300 [0] NCCL INFO comm 0x37c1dcf0 rank 0 nranks 2 cudaDev 0 busId 1e0 - Abort COMPLETE
+ip-172-31-15-129:197:300 [0] NCCL INFO Unloading plugin ofi
+ip-172-31-15-129:197:197 [0] NCCL INFO ENV/Plugin: Closing env plugin ncclEnvDefault
+E1004 20:33:23.158000 1 torch/distributed/elastic/multiprocessing/api.py:984] failed (exitcode: 1) local_rank: 0 (pid: 197) of binary: /opt/venv/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/workspace/repo/g5/train.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-10-04_20:33:23
+  host      : ip-172-31-15-129.us-west-2.compute.internal
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 197)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

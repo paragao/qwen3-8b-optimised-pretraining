@@ -683,23 +683,30 @@ and a 3x slowdown versus one node (see the measured table below).
 #### FIXED: the launcher now attaches an EFA at 2 nodes
 
 `USE_EFA` defaults to `1` when `NODES=2` and to `0` at `NODES=1`, where there is
-no inter-node traffic for it to carry. Three things had to change together,
-because any one alone leaves NCCL on TCP:
+no inter-node traffic for it to carry. **Four** things had to change together,
+because any one alone leaves NCCL on TCP or unable to connect at all:
 
 | layer | change | why alone it is not enough |
 |---|---|---|
 | interface | `run-instances --network-interfaces "...InterfaceType=efa..."` | without a device, libfabric has no provider to open |
-| security group | `IpProtocol=-1` self-referencing, replacing `tcp/1-65535` | **EFA is not TCP**, so a TCP rule silently blocks it |
+| SG inbound | `IpProtocol=-1` self-referencing, replacing `tcp/1-65535` | **EFA is not TCP**, so a TCP rule silently blocks it |
+| SG outbound | `IpProtocol=-1` self-referencing, **added** to the default `0.0.0.0/0` | a **CIDR** rule cannot match non-IP EFA traffic, so the default egress does not carry it |
 | container | `--device /dev/infiniband` plus `FI_PROVIDER=efa` | the host having an EFA does not make it visible in the container |
 
-The security-group half is the one that looks done and is not: AWS's guide calls
-the self-referencing all-traffic rule "mandatory for EFA to function. Without
-these rules, EFA traffic between instances will be blocked and NCCL
-communication will fail." The launcher now asserts the protocol is `-1` when
-`USE_EFA=1` and **refuses to launch** against a `tcp/1-65535` rule, which is the
-exact shape that passed every previous check while costing 3x in throughput.
-Exposure is unchanged in kind: still self-referencing, still no CIDR. The rule
-widens the protocol set, not the source set.
+The security-group layers are the ones that look done and are not. AWS's guide
+says it in one sentence: "the self-referencing inbound **and outbound** rules
+(allowing all traffic to and from the security group itself) are mandatory for
+EFA to function. Without these rules, EFA traffic between instances will be
+blocked and NCCL communication will fail." I read that sentence, implemented the
+inbound half, and missed the outbound half -- which cost a run (see "FOURTH
+LAYER" below). The launcher now asserts both, and **refuses to launch** against
+a `tcp/1-65535` inbound rule or a missing self-referencing outbound rule.
+
+The outbound rule is **added alongside** the existing `0.0.0.0/0` egress, never
+instead of it: the nodes need outbound internet for the ~77 GB image pull and
+the c4 download. Exposure is unchanged in kind -- every rule added here is
+self-referencing, with no CIDR. `IpProtocol=-1` widens the protocol set, not the
+source set.
 
 No custom image is needed. The stock `nvcr.io/nvidia/nemo:26.04` already logged
 `Initializing aws-ofi-nccl 1.17.3` and `Using Libfabric version 2.3` on the
@@ -757,6 +764,57 @@ Whether EFA recovers the predicted ~1.8x is **still untested**: no 2-node run
 has yet completed a step over it. The arithmetic says it is the one change with
 the leverage, since ~92% of the step is transfer.
 `eks/set-efa.sh` does the equivalent on the EKS path.
+
+#### FOURTH LAYER: the handshake needs a self-referencing OUTBOUND rule
+
+With RDMA unset, the next run got further and failed differently -- no
+`SIGABRT`, a clean Python exception on both ranks:
+
+```
+torch.distributed.DistBackendError: NCCL error ... ncclRemoteError
+NET/OFI Request ... completed with error. RC: 103. Error: 4126
+(Unresponsive receiver (reachable by EFA device but handshake failed)
+ My EFA addr: fi_addr_efa://[fe80::8ff:e2ff:fe9a:b815]:0:102020407
+ My host id: i-0f9e509bdf5c054bc
+ Peer EFA addr: fi_addr_efa://[fe80::8ff:f7ff:fefc:bc43]:0:1879318055
+ Peer host id: N/A)
+```
+
+It died in `_initialize_distributed` at `torch.distributed.barrier()` -- the
+first collective, before any model work. "Reachable by EFA device but handshake
+failed" is precise: addressing resolved, and `Peer host id: N/A` says the reply
+never came.
+
+The cause was the security group, again, and specifically the half of AWS's
+sentence I had not implemented. Measured state at the time of failure:
+
+| | rule | carries EFA? |
+|---|---|---|
+| inbound | `-1` from the group itself | yes |
+| outbound | `-1` to `0.0.0.0/0` | **no** |
+
+`0.0.0.0/0` is a **CIDR**, and EFA traffic is not IP, so a CIDR rule cannot
+match it -- the default egress permits every IP packet and no EFA packet. The
+same JMESPath query counting self-referencing `-1` rules returned **1 for
+inbound and 0 for outbound** on the live group, which is both the diagnosis and
+proof the check is not vacuous.
+
+Everything else was already right and was verified: same subnet
+(`subnet-b3815cee`), same AZ (`us-west-2c`), `InterfaceType: efa` on both
+nodes, one security group, `Selected provider is efa` on both ranks.
+
+**This one needs no relaunch.** Unlike an EFA interface, a security group rule
+applies to running instances immediately:
+
+```bash
+./g5/fix-cluster-sg.sh        # adds the outbound rule, launches nothing
+```
+
+`fix-cluster-sg.sh` now converges both halves and asserts both, and the
+launcher does the same for a fresh cluster. Three successive too-narrow shapes
+have each cost a run here -- `tcp/29500` only, then `tcp/1-65535` inbound only,
+then inbound-only all-protocol -- so each one now has an assertion that refuses
+rather than a comment that warns.
 
 Then on **each** node — identical except `NODE_RANK`, and `MASTER_ADDR` is
 rank 0's **private** address on both (the launcher prints the exact commands):
