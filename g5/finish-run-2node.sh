@@ -36,16 +36,21 @@
 # of node count, so at GBS=8 a second node halves per-rank compute without
 # shrinking the gradient all-reduce.
 #
-# MEASURED 2026-10-04, and the result is negative: GBS=16 over 1000 iterations
-# gave 8,086 tok/s against 24,727 tok/s on ONE node at the same geometry, i.e.
-# 0.33x -- a 3x SLOWDOWN, where the derivation in g5/README.md had predicted
-# 1.81x. The cause is measured and FIXABLE: g5.8xlarge reports
-# EfaSupported=true with 1 EFA interface, but g5/launch-instance.sh attaches a
-# plain ENA (both nodes report InterfaceType "interface"), so NCCL finds no
-# libfabric provider and the ~1 GB per-step gradient exchange crosses TCP at
-# ~4 Gbit/s of a 25 Gbit link. The 2.026s step time IS that transfer, so
-# raising GBS cannot help. This script is kept because the path now works and
-# is instrumented, NOT because two nodes are faster. See g5/README.md.
+# MEASURED 2026-10-04 over 1000 iterations at GBS=16, both transports:
+#   1 node   GBS 8  : 24,727 tok/s  (0.331s/step, 8,192 tok)
+#   2 node   GBS 16 : 8,086 tok/s   over TCP (0.33x -- no EFA device attached)
+#   2 node   GBS 16 : 25,056 tok/s  over EFA (1.01x -- EFA working)
+#
+# So the 1.81x derivation in g5/README.md is REFUTED, and EFA was only half the
+# story. EFA is worth 3.10x against TCP; the second node is still worth +1.3%.
+# Both step times equal bytes/bandwidth exactly -- 1,033 MB per step at 510 vs
+# 1,580 MB/s gives 2.026s and 0.654s -- while per-rank compute is ~0.331s. So
+# communication is ~2x compute and overlap cannot hide it, and even at 100% of
+# the 25 Gbit line rate the transfer would cost 0.33s, equal to the compute.
+# The lever is more TOKENS PER STEP PER RANK, not a faster link.
+#
+# This script is kept because the path now works and is instrumented, NOT
+# because two nodes are faster at this geometry. See g5/README.md.
 set -euo pipefail
 
 REGION="${REGION:-us-east-1}"

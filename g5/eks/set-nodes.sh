@@ -16,11 +16,25 @@
 # The last one is the point of adding a node at all: at a FIXED
 # GLOBAL_BATCH_SIZE, two nodes is only ~1.05-1.07x on the smoke/wider profiles
 # because the gradient all-reduce does not shrink. Scaling it was derived to
-# give ~1.8-2.0x -- but that derivation assumes EFA, and MEASURED WITHOUT EFA
-# the direct-EC2 2-node run came out at 0.33x (8,086 vs 24,727 tok/s, a 3x
-# SLOWDOWN), because the step time degenerates to the gradient transfer time
-# over TCP. So ~1.8-2.0x is reachable on this path ONLY with an EFA device
-# actually attached -- run g5/eks/set-efa.sh and confirm NCCL does not log
+# give ~1.8-2.0x -- and that derivation is now REFUTED by measurement on the
+# direct-EC2 path at this geometry:
+#
+#   1 node   GBS 8  : 24,727 tok/s
+#   2 node   GBS 16 : 8,086 tok/s over TCP (0.33x) -- no EFA device attached
+#   2 node   GBS 16 : 25,056 tok/s over EFA (1.01x) -- EFA working
+#
+# So EFA is worth 3.1x against TCP and the second node is still worth only
+# +1.3%. The step is bandwidth-bound either way: 1,033 MB moves per step and
+# per-rank compute is ~0.331s, so communication is ~2x compute and overlap
+# cannot hide it. Even at 100% of the 25 Gbit line rate the transfer costs
+# 0.33s, equal to the compute, so no fabric makes a second node pay HERE.
+#
+# ~1.8-2.0x needs more TOKENS PER STEP PER RANK (compute scales, the 1,033 MB
+# does not), not a faster link. Untested prediction: at 32,768 tok/step a
+# 2-node run should beat its 1-node counterpart by >1.4x.
+#
+# EFA remains mandatory if you run 2 nodes at all -- without it you lose 3x.
+# Run g5/eks/set-efa.sh and confirm NCCL does not log
 # "NET/OFI No eligible providers were found". See the table in g5/README.md.
 #
 # Usage:

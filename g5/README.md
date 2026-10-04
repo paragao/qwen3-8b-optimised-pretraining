@@ -788,9 +788,10 @@ they never existed on this hardware. Two subtleties worth keeping:
 - Set it only on hardware with rdma-read (p4d/p5 and similar), and confirm with
   `fi_info -p efa` rather than assuming.
 
-Whether EFA recovers the predicted ~1.8x is **still untested**: no 2-node run
-has yet completed a step over it. The arithmetic says it is the one change with
-the leverage, since ~92% of the step is transfer.
+Whether EFA recovers the predicted ~1.8x is now **ANSWERED: no.** It completed
+at 25,056 tok/s -- 3.10x the TCP figure and 1.01x a single node. See
+"MEASURED WITH EFA" below: the step is bandwidth-bound either way and
+communication is ~2x per-rank compute, so overlap cannot hide it.
 `eks/set-efa.sh` does the equivalent on the EKS path.
 
 #### FOURTH LAYER: the handshake needs a self-referencing OUTBOUND rule
@@ -910,15 +911,15 @@ so a second instance doubles the bill for ~5%. Doubling `GLOBAL_BATCH_SIZE`
 instead keeps per-rank compute at its 1-node value and doubles tokens/step,
 amortising the same all-reduce over twice the work:
 
-| profile | tok/step | 1-node tok/s | 2-node tok/s | speedup |
-|---|---|---|---|---|
-| `smoke` | 16,384 | 24,757 | 44,781 | **1.81x** |
-| `wider` | 16,384 | 14,357 | 25,677 | **1.79x** |
-| `deeper` | 32,768 | 18,793 | 37,589 | **2.00x** |
+| profile | tok/step | 1-node tok/s | 2-node tok/s | speedup | MEASURED 2-node |
+|---|---|---|---|---|---|
+| `smoke` | 16,384 | 24,757 | 44,781 | **1.81x** | **25,056 (1.01x)** over EFA; 8,086 (0.33x) over TCP |
+| `wider` | 16,384 | 14,357 | 25,677 | **1.79x** | not measured |
+| `deeper` | 32,768 | 18,793 | 37,589 | **2.00x** | not measured |
 
 Both tables are **derivations, now REFUTED by measurement on `g5.8xlarge`.**
 
-#### MEASURED: a second `g5.8xlarge` makes this model 3x SLOWER
+#### MEASURED WITHOUT EFA: a second `g5.8xlarge` makes this model 3x SLOWER
 
 First completed 2-node run, 2026-10-04, 1000 iterations, real c4, identical
 geometry to the `smoke` single-node baseline (4 layers, hidden 1024, ffn 3072,
@@ -953,23 +954,71 @@ providers were found`, falling back to `Selected provider is tcp` with
 = 18.5 Gbit/s, which TCP at 4.08 Gbit/s cannot approach but EFA on a 25 Gbit
 link plausibly can.
 
-**Practical conclusion: do not add a second `g5.8xlarge` without EFA.** The
-0.33x above is what a plain-ENA pair measures, and there one node is 3x faster
-and half the price. The derivation was not wrong about the hardware -- it was
-wrong to assume the launcher configured it.
+#### MEASURED WITH EFA: 3.1x faster than TCP, and 1.01x versus ONE node
 
-`g5/launch-instance.sh` now attaches an EFA by default at `NODES=2` (see
-"FIXED" and "CONFIRMED" above), so a cluster launched today does not reproduce
-that figure. EFA is confirmed to **negotiate** -- both ranks log
-`Selected provider is efa, fabric is efa` -- but whether it recovers the
-predicted ~1.8x is **still untested**: no run has completed a training step
-over it, so the only 2-node throughput on record remains the TCP one. The
-arithmetic says it is the single change with the leverage, since ~92% of the
-step is transfer, but that is a prediction, not a result. `USE_EFA=0 NODES=2`
-reproduces the slow baseline deliberately if the two need comparing.
+First 2-node run to complete over EFA, 2026-10-04, 1000 iterations on real c4,
+`Selected provider is efa` on both ranks:
 
-An EFA interface cannot be added to a running instance, so moving an existing
-cluster onto it means terminating and relaunching.
+| | tok/step | median step | median tok/s | vs 1 node |
+|---|---|---|---|---|
+| 1 node, GBS 8 | 8,192 | 0.331 s | 24,727 | — |
+| 2 nodes, GBS 16, **TCP** | 16,384 | 2.026 s | 8,086 | 0.33x |
+| 2 nodes, GBS 16, **EFA** | 16,384 | **0.654 s** | **25,056** | **1.01x** |
+
+99 steady-state steps, stdev 460 tok/s (1.8%), loss 11.9155 -> 5.5249, peak
+4.83 GiB allocated.
+
+**EFA fixed the regression and did not deliver the speed-up.** 3.10x over TCP,
+and +1.3% over a single node -- parity, for twice the hardware.
+
+The reason is measured, not inferred. CloudWatch `NetworkOut` on both nodes:
+
+| | sustained per node | x bytes/step | = predicted step | measured step |
+|---|---|---|---|---|
+| TCP | 510 MB/s | 1,033 MB | 2.026 s | 2.026 s |
+| EFA | 1,580 MB/s | 1,033 MB | 0.654 s | 0.654 s |
+
+Both step times fall out of `bytes / bandwidth` exactly, and the bandwidth
+ratio (3.10x) equals the throughput ratio (3.10x). Bytes per step are identical
+in both runs because the model and optimizer are, so **the step is the transfer
+in both cases** -- EFA just moves it 3.1x faster, at 12.65 Gbit/s (50.6% of the
+25 Gbit line rate) against TCP's 4.08 Gbit/s (16.3%).
+
+Per-rank work is identical to the 1-node baseline: at GBS=16 with DP=2 each rank
+processes 8 sequences, the same 8,192 tokens the single node does at GBS=8. So
+per-rank compute is ~0.331 s while communication is 0.654 s. **Communication is
+~2x compute, so overlap cannot hide it** -- `overlap_grad_reduce`,
+`overlap_param_gather` and the distributed optimizer were all enabled
+(confirmed in the log) and the step still cannot be shorter than the transfer.
+
+So the ~1.8x derivation was wrong in two ways, and EFA was only one of them:
+
+1. It used 719 MB of gradients (`359.4M x 2 B`). The real volume is **1,033 MB**
+   measured, because the distributed optimizer adds a parameter all-gather.
+2. It assumed perfect overlap. Overlap can only hide communication that is
+   *shorter* than the compute it hides behind, and here it is twice as long.
+
+Even at 100% of line rate (3,125 MB/s) the transfer would take 0.33 s, equal to
+the per-rank compute -- so **no amount of fabric makes a second node pay for
+this geometry.** The model is too small: gradient volume is fixed by parameter
+count while compute is set by tokens per step, and at 8,192 tokens per rank the
+ratio is unfavourable.
+
+**Practical conclusion: one `g5.8xlarge` for this model.** A second buys 1.3%
+for 2x the cost. If you do run two, EFA is not optional -- without it you lose
+3x rather than gaining anything.
+
+**Prediction, stated before the run that would test it.** The lever is tokens
+per step per rank, which scales compute while the 1,033 MB transfer stays fixed.
+At 4x the tokens (32,768 tok/step, e.g. the `deeper` profile or seq 4096),
+per-rank compute should be ~1.32 s against the same 0.654 s of communication, so
+overlap has room to hide most of it and a 2-node run should exceed **1.4x** its
+own 1-node counterpart. If it does not, the overlap model in this README is
+wrong and should be dropped rather than re-fitted.
+
+`USE_EFA=0 NODES=2` reproduces the slow TCP baseline for comparison. An EFA
+interface cannot be added to a running instance, so switching an existing
+cluster means terminating and relaunching.
 
 The original derivation is reproduced from the single-node measured figures in
 [`results/validation-run.md`](results/validation-run.md). Note that scaling the

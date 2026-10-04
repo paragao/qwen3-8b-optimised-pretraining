@@ -208,6 +208,13 @@ if [[ "${NNODES}" -gt 1 ]]; then
     echo "        Passing the device into the container and selecting the efa"
     echo "        libfabric provider. Confirm it took effect: the NCCL log must"
     echo "        NOT contain 'No eligible providers were found'."
+    echo "        MEASURED 2026-10-04 at GBS=16, 1000 iters: 25,056 tok/s,"
+    echo "        3.10x the TCP figure -- and only 1.01x a SINGLE node."
+    echo "        The step is bandwidth-bound: 1,033 MB moves per step at"
+    echo "        1,580 MB/s = 0.654s, while per-rank compute is ~0.331s, so"
+    echo "        communication is ~2x compute and overlap cannot hide it."
+    echo "        A second node is worth +1.3% here. The lever is more TOKENS"
+    echo "        per step per rank, not a faster link. See g5/README.md."
   else
     echo "  WARNING: no EFA device on this host, so NCCL will fall back to TCP."
     echo "        MEASURED consequence (2026-10-04, 1000 iterations, GBS=16):"
