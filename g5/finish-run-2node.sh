@@ -438,10 +438,9 @@ echo "    both nodes: checksums MATCH -- data-parallel ranks will index identica
 # must agree on the shuffle index, and copying makes them identical by
 # construction instead of trusting two hosts' numpy RNG to agree.
 sync_index_cache() {   # 0 = synced and verified, 1 = nothing to copy, 2 = error
-  local relay list n0
-  relay="${KEYDIR}/idxcache"
+  local tarball list n0 tar_bytes
+  tarball="${KEYDIR}/idxcache.tar"
   list="${KEYDIR}/idxcache.md5"
-  mkdir -p "${relay}"
 
   # Take node 0's own checksums first. These are what node 1 is verified
   # against later, so the verification compares node 1 to node 0 rather than
@@ -465,17 +464,33 @@ sync_index_cache() {   # 0 = synced and verified, 1 = nothing to copy, 2 = error
   fi
 
   echo "    node 0 holds ${n0} index file(s) in ${INDEX_CACHE_DIR}"
+
+  # Stream with tar over ssh rather than scp with a remote glob. scp has used
+  # the SFTP protocol by default since OpenSSH 9.0 (this host is 10.x), where
+  # expanding a remote wildcard is the client's job rather than the remote
+  # shell's -- so `scp host:dir/*` is no longer the dependable spelling it was.
+  # tar needs no glob at either end and moves the whole directory in one
+  # stream, which is also fewer round trips than one file at a time.
   set_opts 0
-  if ! scp "${OPTS[@]}" -q "${OS_USER}@${IDS[0]}:${INDEX_CACHE_DIR}/*" "${relay}/"; then
-    echo "FATAL: could not copy the index cache off node 0." >&2
+  if ! ssh "${OPTS[@]}" "${OS_USER}@${IDS[0]}" \
+        "tar -C '${INDEX_CACHE_DIR}' -cf - ." > "${tarball}"; then
+    echo "FATAL: could not read the index cache off node 0." >&2
     return 2
   fi
-  echo "    relayed $(ls -1 "${relay}" | wc -l | tr -d ' ') file(s) through this host"
+  tar_bytes=$(wc -c < "${tarball}" | tr -d ' ')
+  if [[ "${tar_bytes}" -lt 1024 ]]; then
+    echo "FATAL: the index cache stream off node 0 is only ${tar_bytes} bytes." >&2
+    echo "       That is too small to be ${n0} real index files; refusing to" >&2
+    echo "       push it and call the result verified." >&2
+    return 2
+  fi
+  echo "    streamed ${tar_bytes} bytes off node 0 through this host"
 
   set_opts 1
-  ssh "${OPTS[@]}" "${OS_USER}@${IDS[1]}" "mkdir -p '${INDEX_CACHE_DIR}'"
-  if ! scp "${OPTS[@]}" -q "${relay}"/* "${OS_USER}@${IDS[1]}:${INDEX_CACHE_DIR}/"; then
-    echo "FATAL: could not copy the index cache onto node 1." >&2
+  if ! ssh "${OPTS[@]}" "${OS_USER}@${IDS[1]}" \
+        "mkdir -p '${INDEX_CACHE_DIR}' && tar -C '${INDEX_CACHE_DIR}' -xf -" \
+        < "${tarball}"; then
+    echo "FATAL: could not write the index cache onto node 1." >&2
     return 2
   fi
 
