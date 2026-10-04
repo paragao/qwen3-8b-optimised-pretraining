@@ -15,8 +15,13 @@
 #
 # The last one is the point of adding a node at all: at a FIXED
 # GLOBAL_BATCH_SIZE, two nodes is only ~1.05-1.07x on the smoke/wider profiles
-# because the gradient all-reduce does not shrink. Scaling it gives ~1.8-2.0x.
-# See the table in g5/README.md.
+# because the gradient all-reduce does not shrink. Scaling it was derived to
+# give ~1.8-2.0x -- but that derivation assumes EFA, and MEASURED WITHOUT EFA
+# the direct-EC2 2-node run came out at 0.33x (8,086 vs 24,727 tok/s, a 3x
+# SLOWDOWN), because the step time degenerates to the gradient transfer time
+# over TCP. So ~1.8-2.0x is reachable on this path ONLY with an EFA device
+# actually attached -- run g5/eks/set-efa.sh and confirm NCCL does not log
+# "NET/OFI No eligible providers were found". See the table in g5/README.md.
 #
 # Usage:
 #   ./g5/eks/set-nodes.sh 1

@@ -34,8 +34,18 @@
 #
 # GLOBAL_BATCH_SIZE defaults to 16, not 8. tokens/step is GBS x seq regardless
 # of node count, so at GBS=8 a second node halves per-rank compute without
-# shrinking the gradient all-reduce and buys ~5% on the smoke/wider profiles.
-# At 16 it is ~1.8x. See the tables in g5/README.md.
+# shrinking the gradient all-reduce.
+#
+# MEASURED 2026-10-04, and the result is negative: GBS=16 over 1000 iterations
+# gave 8,086 tok/s against 24,727 tok/s on ONE node at the same geometry, i.e.
+# 0.33x -- a 3x SLOWDOWN, where the derivation in g5/README.md had predicted
+# 1.81x. The cause is measured and FIXABLE: g5.8xlarge reports
+# EfaSupported=true with 1 EFA interface, but g5/launch-instance.sh attaches a
+# plain ENA (both nodes report InterfaceType "interface"), so NCCL finds no
+# libfabric provider and the ~1 GB per-step gradient exchange crosses TCP at
+# ~4 Gbit/s of a 25 Gbit link. The 2.026s step time IS that transfer, so
+# raising GBS cannot help. This script is kept because the path now works and
+# is instrumented, NOT because two nodes are faster. See g5/README.md.
 set -euo pipefail
 
 REGION="${REGION:-us-east-1}"
@@ -762,7 +772,19 @@ for RUN_ATTEMPT in 1 2; do
 done
 
 # --------------------------------------------------------------- results
-say "Parsing rank 0's throughput"
+# Geometry comes from rank 0 and THROUGHPUT FROM THE LAST RANK. Megatron emits
+# the per-iteration record with print_rank_last, so on a 2-node run rank 0's log
+# has ZERO timing lines (measured: 0 on rank 0, 100 on rank 1 for the completed
+# 1000-iteration run of 2026-10-04). Parsing rank 0 therefore made every
+# SUCCESSFUL 2-node run report "FATAL: no throughput to report", which is what
+# the operator saw for three runs in a row.
+#
+# --seq-len is passed because the geometry banner is on rank 0 while the timing
+# lines are on the last rank, so neither log alone carries both. Given
+# --seq-len, throughput.py combines it with the global batch size logged in the
+# iteration records themselves.
+LAST=$(( ${#IDS[@]} - 1 ))
+say "Parsing geometry (rank 0) and throughput (rank ${LAST})"
 set_opts 0
 ssh "${OPTS[@]}" "${OS_USER}@${IDS[0]}" bash -s <<REMOTE || true
 set -u
@@ -774,8 +796,15 @@ echo "    --- resolved geometry and data source ---"
 grep -E "num_layers +:|hidden_size +:|TOTAL |data parallel size|grad accum|dataset:|tokens per step" "\${log}" || true
 echo
 grep -E "VALIDATION COMPLETE|peak allocated|peak reserved|end-to-end|wall clock" "\${log}" || true
+REMOTE
+set_opts "${LAST}"
+ssh "${OPTS[@]}" "${OS_USER}@${IDS[$LAST]}" bash -s <<REMOTE || true
+set -u
+log=\$(ls -t /home/ubuntu/qwen3-g5/run/logs/*.log 2>/dev/null | head -1)
+[ -n "\${log}" ] || { echo "FATAL: no log on rank ${LAST}" >&2; exit 1; }
 echo
-python3 ${REMOTE_REPO}/g5/throughput.py "\${log}" || true
+echo "    --- throughput (rank ${LAST}, where print_rank_last writes) ---"
+python3 ${REMOTE_REPO}/g5/throughput.py "\${log}" --seq-len "${SEQ_LENGTH:-1024}" || true
 REMOTE
 
 # Retrieve EVERY rank's log, not just rank 0's. In a collective timeout the
@@ -833,7 +862,14 @@ if [[ "${run_fail}" -ne 0 ]]; then
       continue
     fi
     echo "    --- rank ${i}: ${RETRIEVED[$i]} ---"
-    python3 "${HERE}/throughput.py" "${RETRIEVED[$i]}" 2>&1 \
+    if [[ "${i}" -ne "${LAST}" ]]; then
+      echo "        NOTE: rank ${i} is not the last rank, so Megatron's"
+      echo "        print_rank_last writes NO per-iteration timing lines here."
+      echo "        A 'no throughput to report' below is EXPECTED on this rank"
+      echo "        and is not evidence the run failed -- rank ${LAST} has the"
+      echo "        timings. This parse is kept only for failure markers."
+    fi
+    python3 "${HERE}/throughput.py" "${RETRIEVED[$i]}" --seq-len "${SEQ_LENGTH:-1024}" 2>&1 \
       | sed 's/^/      /' || true
   done
 fi

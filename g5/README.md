@@ -655,8 +655,19 @@ abort, and the driver parses **every** retrieved rank log instead of rank 0's
 alone — on 2026-10-04 rank 0's log yielded "no explicit failure marker was
 found" while rank 1's held the whole explanation.
 
-**There is no EFA on `g5.8xlarge`.** The same log shows what the all-reduce
-actually runs over:
+**EFA is supported on `g5.8xlarge` but was never ATTACHED.** An earlier revision
+of this section said "there is no EFA on `g5.8xlarge`" and that was **wrong** --
+contradicted by this repo's own line 19 and by the API:
+
+```
+$ aws ec2 describe-instance-types --instance-types g5.8xlarge \
+    --query 'InstanceTypes[0].NetworkInfo.{Efa:EfaSupported,Max:EfaInfo.MaximumEfaInterfaces}'
+Efa: True,  Max: 1
+```
+
+What is actually true is that `g5/launch-instance.sh` attaches a plain ENA, so
+the running nodes report `InterfaceType: "interface"` rather than `"efa"`, and
+libfabric therefore finds no provider:
 
 ```
 NET/OFI No eligible providers were found
@@ -664,12 +675,13 @@ NET/OFI Selected provider is tcp, fabric is 172.31.32.0/20 (found 1 nics)
 NET/OFI Need to force simple protocol: GDR not supported
 ```
 
-So inter-node traffic is plain TCP over `ens5` with no GPUDirect, and
-`NCCL_PROTO=simple` is forced. Both scaling tables above assume EFA, so on this
-instance type they are not merely optimistic ceilings — the fabric they assume
-is **absent**, and the real figures will fall short of them by more than the
-overlap assumption alone would explain. EFA needs an instance type that offers
-it (`g5.48xlarge`, `p4d`, `p5`) plus an `IpProtocol=-1` self-referencing rule.
+So inter-node traffic falls back to plain TCP over `ens5` with no GPUDirect and
+`NCCL_PROTO=simple` forced. That is a **launch-configuration gap, fixable by
+attaching an EFA interface at launch** (`InterfaceType=efa`, max 1 on this
+type), not a property of the instance type. The EKS path already handles this --
+see [`eks/set-efa.sh`](eks/set-efa.sh) -- while the direct-EC2 launcher does
+not. Measured consequence: 4.08 Gbit/s achieved of a nominal 25 Gbit/s, and a
+3x slowdown versus one node (see the measured table below).
 
 Then on **each** node — identical except `NODE_RANK`, and `MASTER_ADDR` is
 rank 0's **private** address on both (the launcher prints the exact commands):
@@ -743,14 +755,54 @@ amortising the same all-reduce over twice the work:
 | `wider` | 16,384 | 14,357 | 25,677 | **1.79x** |
 | `deeper` | 32,768 | 18,793 | 37,589 | **2.00x** |
 
-Both tables assume EFA **and** perfect overlap of the all-reduce with the
-backward pass, so treat them as **ceilings, not forecasts**. On `g5.8xlarge`
-specifically the first assumption is now known to be **false**: a 2-node run's
-NCCL log reports `NET/OFI No eligible providers were found` and falls back to
-`Selected provider is tcp` with `GDR not supported`, so the all-reduce runs
-over plain TCP on `ens5`. Expect to fall short of these numbers by more than
-the overlap assumption alone accounts for. Reproduce the
-derivation from the measured figures in
+Both tables are **derivations, now REFUTED by measurement on `g5.8xlarge`.**
+
+#### MEASURED: a second `g5.8xlarge` makes this model 3x SLOWER
+
+First completed 2-node run, 2026-10-04, 1000 iterations, real c4, identical
+geometry to the `smoke` single-node baseline (4 layers, hidden 1024, ffn 3072,
+359.4 M params, seq 1024):
+
+| | tok/step | median step | median tok/s | vs 1 node |
+|---|---|---|---|---|
+| 1 node, GBS 8 | 8,192 | 0.331 s | 24,727 | — |
+| 2 nodes, GBS 16 | 16,384 | **2.026 s** | **8,086** | **0.33x** |
+
+The table above predicted **1.81x**; the measurement is **0.33x**, so the
+derivation is wrong by a factor of 5.5. Doubling tokens/step should have left
+step time at 0.331 s if the all-reduce overlapped; it rose **6.12x** instead.
+
+**The step time IS the network transfer time.** CloudWatch `NetworkOut` on both
+nodes held a steady ~153,000 MB per 300 s during the run, i.e. **510 MB/s per
+node**, symmetric. Over one 2.026 s step that is **1,033 MB per node**, which is
+what this model's gradient exchange costs: 359.4 M params x 2 B (bf16) = 719 MB
+of gradients, and the distributed optimizer adds a parameter all-gather on top.
+Dividing that volume by the achieved bandwidth gives 1,033 / 510 = **2.03 s**,
+which is the entire step. Per-rank compute (~0.166 s, half the 1-node 0.331 s)
+is wholly hidden inside it, so `overlap_grad_reduce` has nothing left to win:
+communication is ~12x compute, not comparable to it.
+
+The achieved **510 MB/s is 4.08 Gbit/s on a nominal 25 Gbit/s link -- 16%.**
+That is the EFA assumption failing. Crucially it fails for a **fixable** reason:
+`g5.8xlarge` reports `EfaSupported: true` with one EFA interface available, but
+`g5/launch-instance.sh` attaches a plain ENA, so both nodes report
+`InterfaceType: "interface"` and libfabric reports `NET/OFI No eligible
+providers were found`, falling back to `Selected provider is tcp` with
+`GDR not supported`. The 311 ms figure predicted above needs 719 MB in 0.311 s
+= 18.5 Gbit/s, which TCP at 4.08 Gbit/s cannot approach but EFA on a 25 Gbit
+link plausibly can.
+
+**Practical conclusion: do not add a second `g5.8xlarge` until EFA is
+attached.** As launched today, one node is 3x faster and half the price. The
+derivation above was not wrong about the hardware -- it was wrong to assume the
+launcher configured it. The open question, untested, is whether attaching an
+EFA interface recovers the predicted ~1.8x; the arithmetic above says it is the
+single change with the leverage to do so, since the step is ~92% transfer.
+`eks/set-efa.sh` already does this on the EKS path; the direct-EC2 launcher
+needs the same treatment, and that requires relaunching the instances because
+an EFA interface cannot be added to a running one.
+
+The original derivation is reproduced from the single-node measured figures in
 [`results/validation-run.md`](results/validation-run.md). Note that scaling the
 batch changes the optimisation (larger effective batch), so a 2-node run is not
 a like-for-like comparison with a 1-node one.

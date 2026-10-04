@@ -1,0 +1,372 @@
+
+====================
+== NeMo Framework ==
+====================
+
+NVIDIA Release  (build 323980803)
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Multiple distributions found for package modelopt. Picked distribution: nvidia-modelopt
+/opt/venv/lib/python3.12/site-packages/modelopt/torch/__init__.py:53: UserWarning: transformers>=5.0 support is experimental. Unified Hugging Face checkpoint export for quantized checkpoints may not work for some models yet.
+  _warnings.warn(
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/models/mimo/config/base_configs.py:12: UserWarning: MimoModelConfig is experimental and still under active development. The API may change without notice in future releases.
+  class MimoModelConfig:
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+`torch_dtype` is deprecated! Use `dtype` instead!
+  dataset: real Megatron-indexed data at /workspace/run/datasets/c4_qwen3
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/transformer/transformer_config.py:1947: UserWarning: full scope is deprecated. Use empty cuda_graph_scope to capture the whole layer.
+  warnings.warn(
+INFO:megatron.bridge.training.utils.log_utils:Setting logging level to 20
+ip-172-31-37-92:196:196 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+ip-172-31-37-92:196:196 [0] NCCL INFO cudaDriverVersion 13020
+ip-172-31-37-92:196:196 [0] NCCL INFO Bootstrap: Using ens5:172.31.37.92<0>
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL version 2.29.3+cuda13.1
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL git version stable dcf2a2fbe
+ip-172-31-37-92:196:196 [0] NCCL INFO Comm config Blocking set to 1
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL_NET_PLUGIN set by environment to ofi
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/Plugin: Loaded net plugin Libfabric (v11)
+ip-172-31-37-92:196:196 [0] NCCL INFO Successfully loaded external network plugin /opt/amazon/aws-ofi-nccl/lib/libnccl-net-ofi.so
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Initializing aws-ofi-nccl 1.17.3
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Using Libfabric version 2.3
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Using CUDA driver version 13020 with runtime 13010
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No eligible providers were found
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Selected provider is tcp, fabric is 172.31.32.0/20 (found 1 nics)
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Using transport protocol SENDRECV
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Creating one domain per process
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Support for global registrations: false
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Support for DMA-BUF registrations: false
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Need to force simple protocol: GDR not supported
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI Adding NCCL_PROTO=simple to environment
+ip-172-31-37-92:196:196 [0] NCCL INFO Initialized NET plugin Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Assigned NET plugin Libfabric to comm
+ip-172-31-37-92:196:196 [0] NCCL INFO Using network Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO DMA-BUF is available on GPU device 0
+ip-172-31-37-92:196:196 [0] NCCL INFO [Rank 1] ncclCommInitRankConfig comm 0x2e9c4770 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x8e7d58120de23fe9 - Init START
+ip-172-31-37-92:196:196 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+ip-172-31-37-92:196:196 [0] NCCL INFO Bootstrap timings total 0.002627 (create 0.000043, send 0.000444, recv 0.001089, ring 0.000335, delay 0.000002)
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-31).
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x2e9c4770 rank 1 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] 0/-1/-1->1->-1
+ip-172-31-37-92:196:196 [0] NCCL INFO P2P Chunksize set to 131072
+ip-172-31-37-92:196:196 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+ip-172-31-37-92:196:196 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+ip-172-31-37-92:196:295 [0] NCCL INFO [Proxy Service] Device 0 CPU core 6
+ip-172-31-37-92:196:296 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 30
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL_TUNER_PLUGIN set by environment to ofi
+ip-172-31-37-92:196:196 [0] NCCL INFO TUNER/Plugin: Could not find: ofi libnccl-tuner-ofi.so
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL_PROTO set by environment to simple
+ip-172-31-37-92:196:196 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ip-172-31-37-92:196:196 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 1 p2p channels per peer
+ip-172-31-37-92:196:196 [0] NCCL INFO Symmetric memory is not supported. cuMemEnable 1, ginSupport 0, globalNicFused 0
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclCommInitRankConfig comm 0x2e9c4770 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x8e7d58120de23fe9 - Init COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 1 nranks 2 total 0.18 (kernels 0.15, alloc 0.02, bootstrap 0.00, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+ip-172-31-37-92:196:297 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 22
+ip-172-31-37-92:196:295 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/Libfabric/0
+ip-172-31-37-92:196:295 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [receive] via NET/Libfabric/0
+ip-172-31-37-92:196:295 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/Libfabric/0
+ip-172-31-37-92:196:295 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [send] via NET/Libfabric/0
+ip-172-31-37-92:196:196 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 0
+> compiling dataset index builder ...
+make: Entering directory '/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets'
+g++ -O3 -Wall -shared -std=c++17 -fPIC -fdiagnostics-color -I/usr/include/python3.12 -I/opt/venv/lib/python3.12/site-packages/pybind11/include helpers.cpp -o helpers_cpp.cpython-312-x86_64-linux-gnu.so
+make: Leaving directory '/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/datasets'
+>>> done with dataset index builder. Compilation time: 7.145 seconds
+INFO:root:Using preset vocab_size: 151936 over the tokenizer vocab_size: 151669, dummy tokens: 267.
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/models/gpt/gpt_layer_specs.py:209: UserWarning: The fp8 argument in "get_gpt_layer_with_transformer_engine_spec" has been deprecated and will be removed soon. Please update your code accordingly.
+  warnings.warn(
+ip-172-31-37-92:196:196 [0] NCCL INFO Connected binomial trees
+> setting tensorboard ...
+INFO:megatron.core.timers:(min, max) time across ranks (ms):
+    model-and-optimizer-setup ......................: (73.45, 73.53)
+    train/valid/test-data-iterators-setup ..........: (402.62, 403.22)
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/pipeline_parallel/schedules.py:211: UserWarning: The AccumulateGrad node's stream does not match the stream of the node that produced the incoming gradient. This may incur unnecessary synchronization and break CUDA graph capture if the AccumulateGrad node's stream is the default stream. This mismatch is caused by an AccumulateGrad node created prior to the current iteration being kept alive. This can happen if the autograd graph is still being kept alive by tensors such as the loss, or if you are using DDP, which will stash a reference to the node. To resolve the mismatch, delete all references to the autograd graph or ensure that DDP initialization is performed under the same stream as subsequent forwards. If the mismatch is intentional, you can use torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False) to suppress this warning. (Triggered internally at /opt/pytorch/pytorch/torch/csrc/autograd/input_buffer.cpp:240.)
+  Variable._execution_engine.run_backward(
+ip-172-31-37-92:196:196 [0] NCCL INFO Comm config Blocking set to 1
+ip-172-31-37-92:196:196 [0] NCCL INFO Initialized NET plugin Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Assigned NET plugin Libfabric to comm
+ip-172-31-37-92:196:196 [0] NCCL INFO Using network Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO DMA-BUF is available on GPU device 0
+ip-172-31-37-92:196:196 [0] NCCL INFO [Rank 1] ncclCommInitRankConfig comm 0x58918ad0 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x6d7c81d8677f124a - Init START
+ip-172-31-37-92:196:196 [0] NCCL INFO Bootstrap timings total 0.002356 (create 0.000059, send 0.000457, recv 0.000957, ring 0.000317, delay 0.000000)
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-31).
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x58918ad0 rank 1 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] 0/-1/-1->1->-1
+ip-172-31-37-92:196:196 [0] NCCL INFO P2P Chunksize set to 131072
+ip-172-31-37-92:196:196 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+ip-172-31-37-92:196:460 [0] NCCL INFO [Proxy Service] Device 0 CPU core 2
+ip-172-31-37-92:196:461 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 5
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL_PROTO set by environment to simple
+ip-172-31-37-92:196:196 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ip-172-31-37-92:196:196 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 1 p2p channels per peer
+ip-172-31-37-92:196:196 [0] NCCL INFO Symmetric memory is not supported. cuMemEnable 1, ginSupport 0, globalNicFused 0
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclCommInitRankConfig comm 0x58918ad0 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x6d7c81d8677f124a - Init COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 1 nranks 2 total 0.01 (kernels 0.00, alloc 0.00, bootstrap 0.00, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+ip-172-31-37-92:196:462 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 17
+ip-172-31-37-92:196:460 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/Libfabric/0
+ip-172-31-37-92:196:460 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [receive] via NET/Libfabric/0
+ip-172-31-37-92:196:460 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/Libfabric/0
+ip-172-31-37-92:196:460 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [send] via NET/Libfabric/0
+ip-172-31-37-92:196:196 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Comm config Blocking set to 1
+ip-172-31-37-92:196:196 [0] NCCL INFO Initialized NET plugin Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Assigned NET plugin Libfabric to comm
+ip-172-31-37-92:196:196 [0] NCCL INFO Using network Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO DMA-BUF is available on GPU device 0
+ip-172-31-37-92:196:196 [0] NCCL INFO [Rank 1] ncclCommInitRankConfig comm 0x58b3d5f0 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x761657fe33c78232 - Init START
+ip-172-31-37-92:196:196 [0] NCCL INFO Bootstrap timings total 0.002222 (create 0.000050, send 0.000444, recv 0.000830, ring 0.000370, delay 0.000000)
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-31).
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x58b3d5f0 rank 1 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] 0/-1/-1->1->-1
+ip-172-31-37-92:196:196 [0] NCCL INFO P2P Chunksize set to 131072
+ip-172-31-37-92:196:196 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+ip-172-31-37-92:196:463 [0] NCCL INFO [Proxy Service] Device 0 CPU core 10
+ip-172-31-37-92:196:464 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 29
+ip-172-31-37-92:196:196 [0] NCCL INFO NCCL_PROTO set by environment to simple
+ip-172-31-37-92:196:196 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ip-172-31-37-92:196:196 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 1 p2p channels per peer
+ip-172-31-37-92:196:196 [0] NCCL INFO Symmetric memory is not supported. cuMemEnable 1, ginSupport 0, globalNicFused 0
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclCommInitRankConfig comm 0x58b3d5f0 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x761657fe33c78232 - Init COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 1 nranks 2 total 0.01 (kernels 0.00, alloc 0.00, bootstrap 0.00, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+ip-172-31-37-92:196:465 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 29
+ip-172-31-37-92:196:463 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/Libfabric/0
+ip-172-31-37-92:196:463 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [receive] via NET/Libfabric/0
+ip-172-31-37-92:196:463 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/Libfabric/0
+ip-172-31-37-92:196:463 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [send] via NET/Libfabric/0
+ip-172-31-37-92:196:196 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Comm config Blocking set to 1
+ip-172-31-37-92:196:196 [0] NCCL INFO Initialized NET plugin Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO Assigned NET plugin Libfabric to comm
+ip-172-31-37-92:196:196 [0] NCCL INFO Using network Libfabric
+ip-172-31-37-92:196:196 [0] NCCL INFO DMA-BUF is available on GPU device 0
+ip-172-31-37-92:196:196 [0] NCCL INFO [Rank 0] ncclCommInitRankConfig comm 0x5b7d9490 rank 0 nranks 1 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x409204130642a2a0 - Init START
+ip-172-31-37-92:196:196 [0] NCCL INFO Bootstrap timings total 0.000610 (create 0.000032, send 0.000159, recv 0.000227, ring 0.000001, delay 0.000000)
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-31).
+ip-172-31-37-92:196:196 [0] NCCL INFO NET/OFI No NIC info for dev 0. Supplying default values for NIC properties.
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x5b7d9490 rank 0 nRanks 1 nNodes 1 localRanks 1 localRank 0 MNNVL 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 00/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 01/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 02/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 03/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 04/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 05/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 06/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 07/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 08/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 09/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 10/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 11/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 12/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 13/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 14/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 15/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 16/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 17/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 18/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 19/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 20/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 21/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 22/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 23/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 24/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 25/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 26/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 27/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 28/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 29/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 30/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 31/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 32/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 33/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 34/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 35/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 36/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 37/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 38/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 39/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 40/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 41/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 42/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 43/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 44/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 45/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 46/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 47/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 48/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 49/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 50/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 51/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 52/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 53/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 54/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 55/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 56/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 57/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 58/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 59/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 60/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 61/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 62/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Channel 63/64 : 0
+ip-172-31-37-92:196:196 [0] NCCL INFO Trees [0] -1/-1/-1->0->-1 [1] -1/-1/-1->0->-1 [2] -1/-1/-1->0->-1 [3] -1/-1/-1->0->-1 [4] -1/-1/-1->0->-1 [5] -1/-1/-1->0->-1 [6] -1/-1/-1->0->-1 [7] -1/-1/-1->0->-1 [8] -1/-1/-1->0->-1 [9] -1/-1/-1->0->-1 [10] -1/-1/-1->0->-1 [11] -1/-1/-1->0->-1 [12] -1/-1/-1->0->-1 [13] -1/-1/-1->0->-1 [14] -1/-1/-1->0->-1 [15] -1/-1/-1->0->-1 [16] -1/-1/-1->0->-1 [17] -1/-1/-1->0->-1 [18] -1/-1/-1->0->-1 [19] -1/-1/-1->0->-1 [20] -1/-1/-1->0->-1 [21] -1/-1/-1->0->-1 [22] -1/-1/-1->0->-1 [23] -1/-1/-1->0->-1 [24] -1/-1/-1->0->-1 [25] -1/-1/-1->0->-1 [26] -1/-1/-1->0->-1 [27] -1/-1/-1->0->-1 [28] -1/-1/-1->0->-1 [29] -1/-1/-1->0->-1 [30] -1/-1/-1->0->-1 [31] -1/-1/-1->0->-1 [32] -1/-1/-1->0->-1 [33] -1/-1/-1->0->-1 [34] -1/-1/-1->0->-1 [35] -1/-1/-1->0->-1 [36] -1/-1/-1->0->-1 [37] -1/-1/-1->0->-1 [38] -1/-1/-1->0->-1 [39] -1/-1/-1->0->-1 [40] -1/-1/-1->0->-1 [41] -1/-1/-1->0->-1 [42] -1/-1/-1->0->-1 [43] -1/-1/-1->0->-1 [44] -1/-1/-1->0->-1 [45] -1/-1/-1->0->-1 [46] -1/-1/-1->0->-1 [47] -1/-1/-1->0->-1 [48] -1/-1/-1->0->-1 [4
+ip-172-31-37-92:196:196 [0] NCCL INFO P2P Chunksize set to 524288
+ip-172-31-37-92:196:196 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+ip-172-31-37-92:196:467 [0] NCCL INFO [Proxy Service] Device 0 CPU core 16
+ip-172-31-37-92:196:468 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 31
+ip-172-31-37-92:196:196 [0] NCCL INFO 64 coll channels, 64 collnet channels, 0 nvls channels, 64 p2p channels, 64 p2p channels per peer
+ip-172-31-37-92:196:196 [0] NCCL INFO CC Off, workFifoBytes 1048576
+ip-172-31-37-92:196:196 [0] NCCL INFO ncclCommInitRankConfig comm 0x5b7d9490 rank 0 nranks 1 cudaDev 0 nvmlDev 0 busId 1e0 commId 0x409204130642a2a0 - Init COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 0 nranks 1 total 0.03 (kernels 0.00, alloc 0.00, bootstrap 0.00, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.02, rest 0.00)
+ [2026-10-04 17:49:09] iteration       10/    1000 | consumed samples:          160 | elapsed time per iteration (ms): 2168.2 | learning rate: 3.000000E-05 | global batch size:    16 | lm loss: 1.191552E+01 | loss scale: 1.0 | grad norm: 5.779 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:49:30] iteration       20/    1000 | consumed samples:          320 | elapsed time per iteration (ms): 2026.1 | learning rate: 6.000000E-05 | global batch size:    16 | lm loss: 1.060361E+01 | loss scale: 1.0 | grad norm: 2.277 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:49:50] iteration       30/    1000 | consumed samples:          480 | elapsed time per iteration (ms): 2026.1 | learning rate: 9.000000E-05 | global batch size:    16 | lm loss: 9.840081E+00 | loss scale: 1.0 | grad norm: 1.857 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:50:10] iteration       40/    1000 | consumed samples:          640 | elapsed time per iteration (ms): 2026.0 | learning rate: 1.200000E-04 | global batch size:    16 | lm loss: 8.820213E+00 | loss scale: 1.0 | grad norm: 1.387 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:50:31] iteration       50/    1000 | consumed samples:          800 | elapsed time per iteration (ms): 2026.0 | learning rate: 1.500000E-04 | global batch size:    16 | lm loss: 7.944144E+00 | loss scale: 1.0 | grad norm: 1.037 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:50:51] iteration       60/    1000 | consumed samples:          960 | elapsed time per iteration (ms): 2025.8 | learning rate: 1.800000E-04 | global batch size:    16 | lm loss: 7.461103E+00 | loss scale: 1.0 | grad norm: 0.851 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:51:11] iteration       70/    1000 | consumed samples:         1120 | elapsed time per iteration (ms): 2026.2 | learning rate: 2.100000E-04 | global batch size:    16 | lm loss: 7.313617E+00 | loss scale: 1.0 | grad norm: 1.027 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:51:31] iteration       80/    1000 | consumed samples:         1280 | elapsed time per iteration (ms): 2026.0 | learning rate: 2.400000E-04 | global batch size:    16 | lm loss: 7.177638E+00 | loss scale: 1.0 | grad norm: 0.838 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:51:52] iteration       90/    1000 | consumed samples:         1440 | elapsed time per iteration (ms): 2026.2 | learning rate: 2.700000E-04 | global batch size:    16 | lm loss: 7.011948E+00 | loss scale: 1.0 | grad norm: 0.896 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:52:12] iteration      100/    1000 | consumed samples:         1600 | elapsed time per iteration (ms): 2026.0 | learning rate: 3.000000E-04 | global batch size:    16 | lm loss: 6.951654E+00 | loss scale: 1.0 | grad norm: 1.217 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:52:33] iteration      110/    1000 | consumed samples:         1760 | elapsed time per iteration (ms): 2071.3 | learning rate: 2.999178E-04 | global batch size:    16 | lm loss: 6.748785E+00 | loss scale: 1.0 | grad norm: 0.925 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:52:53] iteration      120/    1000 | consumed samples:         1920 | elapsed time per iteration (ms): 2026.4 | learning rate: 2.996711E-04 | global batch size:    16 | lm loss: 6.679762E+00 | loss scale: 1.0 | grad norm: 0.799 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:53:13] iteration      130/    1000 | consumed samples:         2080 | elapsed time per iteration (ms): 2026.8 | learning rate: 2.992605E-04 | global batch size:    16 | lm loss: 6.655348E+00 | loss scale: 1.0 | grad norm: 1.042 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:53:33] iteration      140/    1000 | consumed samples:         2240 | elapsed time per iteration (ms): 2026.3 | learning rate: 2.986862E-04 | global batch size:    16 | lm loss: 6.632239E+00 | loss scale: 1.0 | grad norm: 1.441 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:53:54] iteration      150/    1000 | consumed samples:         2400 | elapsed time per iteration (ms): 2026.4 | learning rate: 2.979490E-04 | global batch size:    16 | lm loss: 6.663046E+00 | loss scale: 1.0 | grad norm: 0.804 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:54:14] iteration      160/    1000 | consumed samples:         2560 | elapsed time per iteration (ms): 2026.4 | learning rate: 2.970499E-04 | global batch size:    16 | lm loss: 6.534411E+00 | loss scale: 1.0 | grad norm: 0.765 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:54:34] iteration      170/    1000 | consumed samples:         2720 | elapsed time per iteration (ms): 2026.5 | learning rate: 2.959899E-04 | global batch size:    16 | lm loss: 6.454709E+00 | loss scale: 1.0 | grad norm: 0.730 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:54:54] iteration      180/    1000 | consumed samples:         2880 | elapsed time per iteration (ms): 2026.7 | learning rate: 2.947703E-04 | global batch size:    16 | lm loss: 6.517424E+00 | loss scale: 1.0 | grad norm: 0.854 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:55:15] iteration      190/    1000 | consumed samples:         3040 | elapsed time per iteration (ms): 2026.1 | learning rate: 2.933926E-04 | global batch size:    16 | lm loss: 6.502849E+00 | loss scale: 1.0 | grad norm: 0.860 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:55:35] iteration      200/    1000 | consumed samples:         3200 | elapsed time per iteration (ms): 2026.0 | learning rate: 2.918585E-04 | global batch size:    16 | lm loss: 6.367810E+00 | loss scale: 1.0 | grad norm: 1.223 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:55:56] iteration      210/    1000 | consumed samples:         3360 | elapsed time per iteration (ms): 2070.1 | learning rate: 2.901698E-04 | global batch size:    16 | lm loss: 6.380872E+00 | loss scale: 1.0 | grad norm: 0.781 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:56:16] iteration      220/    1000 | consumed samples:         3520 | elapsed time per iteration (ms): 2026.7 | learning rate: 2.883287E-04 | global batch size:    16 | lm loss: 6.396797E+00 | loss scale: 1.0 | grad norm: 0.805 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:56:36] iteration      230/    1000 | consumed samples:         3680 | elapsed time per iteration (ms): 2026.5 | learning rate: 2.863372E-04 | global batch size:    16 | lm loss: 6.264035E+00 | loss scale: 1.0 | grad norm: 0.768 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:56:56] iteration      240/    1000 | consumed samples:         3840 | elapsed time per iteration (ms): 2026.6 | learning rate: 2.841979E-04 | global batch size:    16 | lm loss: 6.231408E+00 | loss scale: 1.0 | grad norm: 0.739 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:57:17] iteration      250/    1000 | consumed samples:         4000 | elapsed time per iteration (ms): 2026.2 | learning rate: 2.819134E-04 | global batch size:    16 | lm loss: 6.218502E+00 | loss scale: 1.0 | grad norm: 1.034 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:57:37] iteration      260/    1000 | consumed samples:         4160 | elapsed time per iteration (ms): 2026.0 | learning rate: 2.794865E-04 | global batch size:    16 | lm loss: 6.263268E+00 | loss scale: 1.0 | grad norm: 0.713 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:57:57] iteration      270/    1000 | consumed samples:         4320 | elapsed time per iteration (ms): 2026.2 | learning rate: 2.769201E-04 | global batch size:    16 | lm loss: 6.171296E+00 | loss scale: 1.0 | grad norm: 0.795 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:58:17] iteration      280/    1000 | consumed samples:         4480 | elapsed time per iteration (ms): 2026.3 | learning rate: 2.742173E-04 | global batch size:    16 | lm loss: 6.130111E+00 | loss scale: 1.0 | grad norm: 1.125 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:58:38] iteration      290/    1000 | consumed samples:         4640 | elapsed time per iteration (ms): 2026.4 | learning rate: 2.713815E-04 | global batch size:    16 | lm loss: 6.204561E+00 | loss scale: 1.0 | grad norm: 0.903 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:58:58] iteration      300/    1000 | consumed samples:         4800 | elapsed time per iteration (ms): 2026.3 | learning rate: 2.684160E-04 | global batch size:    16 | lm loss: 6.171262E+00 | loss scale: 1.0 | grad norm: 0.824 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:59:19] iteration      310/    1000 | consumed samples:         4960 | elapsed time per iteration (ms): 2070.9 | learning rate: 2.653245E-04 | global batch size:    16 | lm loss: 6.114221E+00 | loss scale: 1.0 | grad norm: 0.933 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:59:39] iteration      320/    1000 | consumed samples:         5120 | elapsed time per iteration (ms): 2026.1 | learning rate: 2.621109E-04 | global batch size:    16 | lm loss: 6.135571E+00 | loss scale: 1.0 | grad norm: 0.799 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 17:59:59] iteration      330/    1000 | consumed samples:         5280 | elapsed time per iteration (ms): 2026.7 | learning rate: 2.587789E-04 | global batch size:    16 | lm loss: 6.067073E+00 | loss scale: 1.0 | grad norm: 0.810 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:00:20] iteration      340/    1000 | consumed samples:         5440 | elapsed time per iteration (ms): 2026.5 | learning rate: 2.553326E-04 | global batch size:    16 | lm loss: 6.131892E+00 | loss scale: 1.0 | grad norm: 0.822 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:00:40] iteration      350/    1000 | consumed samples:         5600 | elapsed time per iteration (ms): 2026.5 | learning rate: 2.517763E-04 | global batch size:    16 | lm loss: 6.071653E+00 | loss scale: 1.0 | grad norm: 0.701 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:01:00] iteration      360/    1000 | consumed samples:         5760 | elapsed time per iteration (ms): 2026.6 | learning rate: 2.481143E-04 | global batch size:    16 | lm loss: 6.021375E+00 | loss scale: 1.0 | grad norm: 0.773 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:01:20] iteration      370/    1000 | consumed samples:         5920 | elapsed time per iteration (ms): 2026.6 | learning rate: 2.443510E-04 | global batch size:    16 | lm loss: 6.053482E+00 | loss scale: 1.0 | grad norm: 0.835 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:01:41] iteration      380/    1000 | consumed samples:         6080 | elapsed time per iteration (ms): 2026.4 | learning rate: 2.404910E-04 | global batch size:    16 | lm loss: 5.972912E+00 | loss scale: 1.0 | grad norm: 0.794 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:02:01] iteration      390/    1000 | consumed samples:         6240 | elapsed time per iteration (ms): 2026.3 | learning rate: 2.365391E-04 | global batch size:    16 | lm loss: 6.067640E+00 | loss scale: 1.0 | grad norm: 0.776 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:02:21] iteration      400/    1000 | consumed samples:         6400 | elapsed time per iteration (ms): 2026.4 | learning rate: 2.325000E-04 | global batch size:    16 | lm loss: 5.981203E+00 | loss scale: 1.0 | grad norm: 0.775 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:02:42] iteration      410/    1000 | consumed samples:         6560 | elapsed time per iteration (ms): 2072.0 | learning rate: 2.283787E-04 | global batch size:    16 | lm loss: 6.031361E+00 | loss scale: 1.0 | grad norm: 0.817 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:03:02] iteration      420/    1000 | consumed samples:         6720 | elapsed time per iteration (ms): 2026.2 | learning rate: 2.241801E-04 | global batch size:    16 | lm loss: 5.822720E+00 | loss scale: 1.0 | grad norm: 0.748 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:03:22] iteration      430/    1000 | consumed samples:         6880 | elapsed time per iteration (ms): 2026.2 | learning rate: 2.199094E-04 | global batch size:    16 | lm loss: 5.887941E+00 | loss scale: 1.0 | grad norm: 0.849 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:03:43] iteration      440/    1000 | consumed samples:         7040 | elapsed time per iteration (ms): 2026.4 | learning rate: 2.155719E-04 | global batch size:    16 | lm loss: 5.942790E+00 | loss scale: 1.0 | grad norm: 0.740 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:04:03] iteration      450/    1000 | consumed samples:         7200 | elapsed time per iteration (ms): 2026.5 | learning rate: 2.111727E-04 | global batch size:    16 | lm loss: 5.898746E+00 | loss scale: 1.0 | grad norm: 0.927 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:04:23] iteration      460/    1000 | consumed samples:         7360 | elapsed time per iteration (ms): 2026.5 | learning rate: 2.067173E-04 | global batch size:    16 | lm loss: 5.870410E+00 | loss scale: 1.0 | grad norm: 0.757 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:04:43] iteration      470/    1000 | consumed samples:         7520 | elapsed time per iteration (ms): 2026.6 | learning rate: 2.022110E-04 | global batch size:    16 | lm loss: 5.841306E+00 | loss scale: 1.0 | grad norm: 0.709 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:05:04] iteration      480/    1000 | consumed samples:         7680 | elapsed time per iteration (ms): 2026.4 | learning rate: 1.976595E-04 | global batch size:    16 | lm loss: 5.924257E+00 | loss scale: 1.0 | grad norm: 0.817 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:05:24] iteration      490/    1000 | consumed samples:         7840 | elapsed time per iteration (ms): 2026.5 | learning rate: 1.930681E-04 | global batch size:    16 | lm loss: 5.827808E+00 | loss scale: 1.0 | grad norm: 0.812 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:05:44] iteration      500/    1000 | consumed samples:         8000 | elapsed time per iteration (ms): 2026.2 | learning rate: 1.884425E-04 | global batch size:    16 | lm loss: 5.852781E+00 | loss scale: 1.0 | grad norm: 0.853 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:06:05] iteration      510/    1000 | consumed samples:         8160 | elapsed time per iteration (ms): 2070.9 | learning rate: 1.837884E-04 | global batch size:    16 | lm loss: 5.766508E+00 | loss scale: 1.0 | grad norm: 0.749 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:06:25] iteration      520/    1000 | consumed samples:         8320 | elapsed time per iteration (ms): 2025.7 | learning rate: 1.791113E-04 | global batch size:    16 | lm loss: 5.865508E+00 | loss scale: 1.0 | grad norm: 0.797 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:06:45] iteration      530/    1000 | consumed samples:         8480 | elapsed time per iteration (ms): 2025.7 | learning rate: 1.744171E-04 | global batch size:    16 | lm loss: 5.726874E+00 | loss scale: 1.0 | grad norm: 0.851 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:07:06] iteration      540/    1000 | consumed samples:         8640 | elapsed time per iteration (ms): 2025.6 | learning rate: 1.697114E-04 | global batch size:    16 | lm loss: 5.722029E+00 | loss scale: 1.0 | grad norm: 0.712 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:07:26] iteration      550/    1000 | consumed samples:         8800 | elapsed time per iteration (ms): 2026.2 | learning rate: 1.650000E-04 | global batch size:    16 | lm loss: 5.830095E+00 | loss scale: 1.0 | grad norm: 2.269 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:07:46] iteration      560/    1000 | consumed samples:         8960 | elapsed time per iteration (ms): 2025.9 | learning rate: 1.602886E-04 | global batch size:    16 | lm loss: 5.734639E+00 | loss scale: 1.0 | grad norm: 2.034 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:08:06] iteration      570/    1000 | consumed samples:         9120 | elapsed time per iteration (ms): 2025.9 | learning rate: 1.555829E-04 | global batch size:    16 | lm loss: 5.715271E+00 | loss scale: 1.0 | grad norm: 0.802 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:08:27] iteration      580/    1000 | consumed samples:         9280 | elapsed time per iteration (ms): 2026.2 | learning rate: 1.508887E-04 | global batch size:    16 | lm loss: 5.696242E+00 | loss scale: 1.0 | grad norm: 1.310 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:08:47] iteration      590/    1000 | consumed samples:         9440 | elapsed time per iteration (ms): 2026.1 | learning rate: 1.462116E-04 | global batch size:    16 | lm loss: 5.686834E+00 | loss scale: 1.0 | grad norm: 0.735 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:09:07] iteration      600/    1000 | consumed samples:         9600 | elapsed time per iteration (ms): 2026.0 | learning rate: 1.415575E-04 | global batch size:    16 | lm loss: 5.673378E+00 | loss scale: 1.0 | grad norm: 0.787 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:09:28] iteration      610/    1000 | consumed samples:         9760 | elapsed time per iteration (ms): 2071.4 | learning rate: 1.369319E-04 | global batch size:    16 | lm loss: 5.653588E+00 | loss scale: 1.0 | grad norm: 0.785 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:09:48] iteration      620/    1000 | consumed samples:         9920 | elapsed time per iteration (ms): 2025.9 | learning rate: 1.323405E-04 | global batch size:    16 | lm loss: 5.770263E+00 | loss scale: 1.0 | grad norm: 0.813 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:10:08] iteration      630/    1000 | consumed samples:        10080 | elapsed time per iteration (ms): 2025.6 | learning rate: 1.277890E-04 | global batch size:    16 | lm loss: 5.724365E+00 | loss scale: 1.0 | grad norm: 0.791 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:10:29] iteration      640/    1000 | consumed samples:        10240 | elapsed time per iteration (ms): 2025.8 | learning rate: 1.232827E-04 | global batch size:    16 | lm loss: 5.708646E+00 | loss scale: 1.0 | grad norm: 0.753 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:10:49] iteration      650/    1000 | consumed samples:        10400 | elapsed time per iteration (ms): 2025.7 | learning rate: 1.188273E-04 | global batch size:    16 | lm loss: 5.667691E+00 | loss scale: 1.0 | grad norm: 0.845 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:11:09] iteration      660/    1000 | consumed samples:        10560 | elapsed time per iteration (ms): 2025.8 | learning rate: 1.144281E-04 | global batch size:    16 | lm loss: 5.743856E+00 | loss scale: 1.0 | grad norm: 0.737 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:11:30] iteration      670/    1000 | consumed samples:        10720 | elapsed time per iteration (ms): 2025.7 | learning rate: 1.100906E-04 | global batch size:    16 | lm loss: 5.659702E+00 | loss scale: 1.0 | grad norm: 0.743 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:11:50] iteration      680/    1000 | consumed samples:        10880 | elapsed time per iteration (ms): 2025.9 | learning rate: 1.058199E-04 | global batch size:    16 | lm loss: 5.697483E+00 | loss scale: 1.0 | grad norm: 0.767 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:12:10] iteration      690/    1000 | consumed samples:        11040 | elapsed time per iteration (ms): 2025.8 | learning rate: 1.016213E-04 | global batch size:    16 | lm loss: 5.642360E+00 | loss scale: 1.0 | grad norm: 0.731 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:12:30] iteration      700/    1000 | consumed samples:        11200 | elapsed time per iteration (ms): 2026.1 | learning rate: 9.750000E-05 | global batch size:    16 | lm loss: 5.687540E+00 | loss scale: 1.0 | grad norm: 0.819 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:12:51] iteration      710/    1000 | consumed samples:        11360 | elapsed time per iteration (ms): 2070.6 | learning rate: 9.346090E-05 | global batch size:    16 | lm loss: 5.625865E+00 | loss scale: 1.0 | grad norm: 0.798 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:13:11] iteration      720/    1000 | consumed samples:        11520 | elapsed time per iteration (ms): 2026.1 | learning rate: 8.950896E-05 | global batch size:    16 | lm loss: 5.594587E+00 | loss scale: 1.0 | grad norm: 0.719 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:13:32] iteration      730/    1000 | consumed samples:        11680 | elapsed time per iteration (ms): 2026.1 | learning rate: 8.564899E-05 | global batch size:    16 | lm loss: 5.616431E+00 | loss scale: 1.0 | grad norm: 0.752 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:13:52] iteration      740/    1000 | consumed samples:        11840 | elapsed time per iteration (ms): 2025.9 | learning rate: 8.188570E-05 | global batch size:    16 | lm loss: 5.639635E+00 | loss scale: 1.0 | grad norm: 0.758 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:14:12] iteration      750/    1000 | consumed samples:        12000 | elapsed time per iteration (ms): 2026.1 | learning rate: 7.822367E-05 | global batch size:    16 | lm loss: 5.550913E+00 | loss scale: 1.0 | grad norm: 0.762 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:14:32] iteration      760/    1000 | consumed samples:        12160 | elapsed time per iteration (ms): 2025.9 | learning rate: 7.466737E-05 | global batch size:    16 | lm loss: 5.654308E+00 | loss scale: 1.0 | grad norm: 0.792 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:14:53] iteration      770/    1000 | consumed samples:        12320 | elapsed time per iteration (ms): 2026.2 | learning rate: 7.122112E-05 | global batch size:    16 | lm loss: 5.613740E+00 | loss scale: 1.0 | grad norm: 0.744 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:15:13] iteration      780/    1000 | consumed samples:        12480 | elapsed time per iteration (ms): 2026.2 | learning rate: 6.788913E-05 | global batch size:    16 | lm loss: 5.514455E+00 | loss scale: 1.0 | grad norm: 0.784 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:15:33] iteration      790/    1000 | consumed samples:        12640 | elapsed time per iteration (ms): 2026.0 | learning rate: 6.467545E-05 | global batch size:    16 | lm loss: 5.593967E+00 | loss scale: 1.0 | grad norm: 1.217 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:15:53] iteration      800/    1000 | consumed samples:        12800 | elapsed time per iteration (ms): 2026.1 | learning rate: 6.158400E-05 | global batch size:    16 | lm loss: 5.600583E+00 | loss scale: 1.0 | grad norm: 0.826 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:16:14] iteration      810/    1000 | consumed samples:        12960 | elapsed time per iteration (ms): 2070.2 | learning rate: 5.861855E-05 | global batch size:    16 | lm loss: 5.490485E+00 | loss scale: 1.0 | grad norm: 0.741 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:16:34] iteration      820/    1000 | consumed samples:        13120 | elapsed time per iteration (ms): 2026.5 | learning rate: 5.578270E-05 | global batch size:    16 | lm loss: 5.642927E+00 | loss scale: 1.0 | grad norm: 0.797 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:16:55] iteration      830/    1000 | consumed samples:        13280 | elapsed time per iteration (ms): 2026.1 | learning rate: 5.307993E-05 | global batch size:    16 | lm loss: 5.554492E+00 | loss scale: 1.0 | grad norm: 0.738 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:17:15] iteration      840/    1000 | consumed samples:        13440 | elapsed time per iteration (ms): 2026.2 | learning rate: 5.051351E-05 | global batch size:    16 | lm loss: 5.659174E+00 | loss scale: 1.0 | grad norm: 0.793 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:17:35] iteration      850/    1000 | consumed samples:        13600 | elapsed time per iteration (ms): 2026.0 | learning rate: 4.808657E-05 | global batch size:    16 | lm loss: 5.538615E+00 | loss scale: 1.0 | grad norm: 0.785 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:17:55] iteration      860/    1000 | consumed samples:        13760 | elapsed time per iteration (ms): 2026.1 | learning rate: 4.580207E-05 | global batch size:    16 | lm loss: 5.510851E+00 | loss scale: 1.0 | grad norm: 0.928 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:18:16] iteration      870/    1000 | consumed samples:        13920 | elapsed time per iteration (ms): 2025.9 | learning rate: 4.366280E-05 | global batch size:    16 | lm loss: 5.445425E+00 | loss scale: 1.0 | grad norm: 0.769 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:18:36] iteration      880/    1000 | consumed samples:        14080 | elapsed time per iteration (ms): 2026.2 | learning rate: 4.167136E-05 | global batch size:    16 | lm loss: 5.553485E+00 | loss scale: 1.0 | grad norm: 0.776 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:18:56] iteration      890/    1000 | consumed samples:        14240 | elapsed time per iteration (ms): 2026.3 | learning rate: 3.983018E-05 | global batch size:    16 | lm loss: 5.559657E+00 | loss scale: 1.0 | grad norm: 0.751 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:19:16] iteration      900/    1000 | consumed samples:        14400 | elapsed time per iteration (ms): 2026.1 | learning rate: 3.814150E-05 | global batch size:    16 | lm loss: 5.619929E+00 | loss scale: 1.0 | grad norm: 0.743 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:19:37] iteration      910/    1000 | consumed samples:        14560 | elapsed time per iteration (ms): 2070.2 | learning rate: 3.660737E-05 | global batch size:    16 | lm loss: 5.544262E+00 | loss scale: 1.0 | grad norm: 0.772 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:19:57] iteration      920/    1000 | consumed samples:        14720 | elapsed time per iteration (ms): 2026.1 | learning rate: 3.522967E-05 | global batch size:    16 | lm loss: 5.540846E+00 | loss scale: 1.0 | grad norm: 0.798 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:20:18] iteration      930/    1000 | consumed samples:        14880 | elapsed time per iteration (ms): 2026.3 | learning rate: 3.401008E-05 | global batch size:    16 | lm loss: 5.483498E+00 | loss scale: 1.0 | grad norm: 0.803 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:20:38] iteration      940/    1000 | consumed samples:        15040 | elapsed time per iteration (ms): 2026.4 | learning rate: 3.295007E-05 | global batch size:    16 | lm loss: 5.460530E+00 | loss scale: 1.0 | grad norm: 0.746 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:20:58] iteration      950/    1000 | consumed samples:        15200 | elapsed time per iteration (ms): 2025.1 | learning rate: 3.205095E-05 | global batch size:    16 | lm loss: 5.531498E+00 | loss scale: 1.0 | grad norm: 0.881 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:21:18] iteration      960/    1000 | consumed samples:        15360 | elapsed time per iteration (ms): 2025.4 | learning rate: 3.131381E-05 | global batch size:    16 | lm loss: 5.539811E+00 | loss scale: 1.0 | grad norm: 0.780 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:21:39] iteration      970/    1000 | consumed samples:        15520 | elapsed time per iteration (ms): 2025.3 | learning rate: 3.073955E-05 | global batch size:    16 | lm loss: 5.469849E+00 | loss scale: 1.0 | grad norm: 0.773 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:21:59] iteration      980/    1000 | consumed samples:        15680 | elapsed time per iteration (ms): 2025.4 | learning rate: 3.032885E-05 | global batch size:    16 | lm loss: 5.527079E+00 | loss scale: 1.0 | grad norm: 0.709 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:22:19] iteration      990/    1000 | consumed samples:        15840 | elapsed time per iteration (ms): 2025.2 | learning rate: 3.008224E-05 | global batch size:    16 | lm loss: 5.491982E+00 | loss scale: 1.0 | grad norm: 0.773 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ [2026-10-04 18:22:39] iteration     1000/    1000 | consumed samples:        16000 | elapsed time per iteration (ms): 2025.4 | learning rate: 3.000000E-05 | global batch size:    16 | lm loss: 5.524863E+00 | loss scale: 1.0 | grad norm: 0.752 | number of skipped iterations:   0 | number of nan iterations:   0 |
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x5b7d9490 rank 0 nranks 1 cudaDev 0 busId 1e0 - Destroy COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x58b3d5f0 rank 1 nranks 2 cudaDev 0 busId 1e0 - Destroy COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x58918ad0 rank 1 nranks 2 cudaDev 0 busId 1e0 - Destroy COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO comm 0x2e9c4770 rank 1 nranks 2 cudaDev 0 busId 1e0 - Destroy COMPLETE
+ip-172-31-37-92:196:196 [0] NCCL INFO Unloading plugin ofi
+ip-172-31-37-92:196:196 [0] NCCL INFO ENV/Plugin: Closing env plugin ncclEnvDefault

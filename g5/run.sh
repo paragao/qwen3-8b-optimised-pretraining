@@ -164,9 +164,31 @@ if [[ "${NNODES}" -gt 1 ]]; then
   echo "Multi-node: ${NNODES} nodes, this is NODE_RANK=${NODE_RANK}"
   echo "  rendezvous : ${MASTER_ADDR}:${MASTER_PORT} (private VPC address)"
   echo "  reachable by: instances in the same security group only"
-  echo "  NOTE: at fixed GLOBAL_BATCH_SIZE, 2 nodes is ~1.05-1.07x on the"
-  echo "        smoke/wider profiles because the gradient all-reduce does not"
-  echo "        shrink. Set GLOBAL_BATCH_SIZE=$((8 * NNODES)) for ~1.8-2.0x."
+  echo "  NOTE: on g5.8xlarge AS LAUNCHED this is MEASURED SLOWER than one"
+  echo "        node. The 2026-10-04 1000-iteration run at GBS=16 gave"
+  echo "        8,086 tok/s against 24,727 tok/s on a single node at the"
+  echo "        same geometry -- 0.33x, a 3x slowdown."
+  echo "        CAUSE: g5.8xlarge SUPPORTS EFA (1 interface) but the"
+  echo "        launcher attaches a plain ENA, so NCCL finds no libfabric"
+  echo "        provider and the ~1 GB per-step gradient exchange crosses"
+  echo "        TCP at ~4 Gbit/s of a 25 Gbit link. The 2.0s step time IS"
+  echo "        that transfer, so raising GLOBAL_BATCH_SIZE cannot fix it."
+  echo "        Use 1 node until an EFA interface is attached at launch."
+  echo "        See g5/README.md and g5/eks/set-efa.sh."
+fi
+
+# Prompt output is operationally load-bearing, not cosmetic. g5/run.sh's stdout
+# is what the 2-node driver streams back to the laptop, and on 2026-10-04 a
+# HEALTHY 1000-iteration run looked locally FROZEN for 34 minutes: torchrun's
+# stdout is a pipe into tee, so Python block-buffered it. LOG_FILE on the node
+# stayed current -- the retrieved log had all 100 iteration records -- so the
+# only things blinded were the operator and the driver's stall watchdog, which
+# treats local log growth as liveness and would have aborted a successful run.
+# PYTHONUNBUFFERED (below, in the container env) fixes the dominant layer;
+# this unbuffers tee's OWN stdout, which stdio buffers when it is not a tty.
+TEE_CMD=(tee "${LOG_FILE}")
+if command -v stdbuf >/dev/null 2>&1; then
+  TEE_CMD=(stdbuf -oL tee "${LOG_FILE}")
 fi
 
 docker run --rm \
@@ -197,6 +219,7 @@ docker run --rm \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -e HF_HOME=/workspace/run/hf \
   -e TORCH_COMPILE_DISABLE=1 \
+  -e PYTHONUNBUFFERED=1 \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e CUDA_DEVICE_MAX_CONNECTIONS=1 \
   -e NCCL_DEBUG="${NCCL_DEBUG:-${NCCL_DEBUG_DEFAULT}}" \
@@ -205,6 +228,6 @@ docker run --rm \
   "${CONTAINER_IMAGE}" \
   torchrun --nproc_per_node=1 --nnodes="${NNODES}" --node_rank="${NODE_RANK}" \
     --master_addr="${MASTER_ADDR}" --master_port="${MASTER_PORT}" \
-    /workspace/repo/g5/train.py 2>&1 | tee "${LOG_FILE}"
+    /workspace/repo/g5/train.py 2>&1 | "${TEE_CMD[@]}"
 
 echo "Log saved to ${LOG_FILE}"
