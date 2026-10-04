@@ -177,17 +177,24 @@ EFA_STATUS="absent"
 if [[ -d /dev/infiniband ]]; then
   EFA_STATUS="present"
   # FI_PROVIDER=efa selects the fabric provider; the ulimits below already lift
-  # memlock, which EFA needs for its registered memory. FI_EFA_USE_DEVICE_RDMA
-  # matches what g5/eks/pretrain.yaml sets on the working EKS path.
+  # memlock, which EFA needs for its registered memory.
   #
-  # NCCL_PROTO is deliberately NOT set: aws-ofi-nccl already logged "Adding
-  # NCCL_PROTO=simple to environment" and "Need to force simple protocol: GDR
-  # not supported" on its own, so the plugin decides it from the hardware. A
-  # hardcoded value here would be a guess overriding a measurement.
+  # FI_EFA_USE_DEVICE_RDMA IS DELIBERATELY NOT SET. Setting it to 1 made both
+  # ranks SIGABRT instantly on 2026-10-04 with:
+  #   "FI_EFA_USE_DEVICE_RDMA=1 was set by user, but EFA device has no
+  #    rdma-read capability.  Application will abort()."
+  # g5's EFA has no GPUDirect RDMA -- the earlier TCP run's own log already said
+  # "Need to force simple protocol: GDR not supported", which is this same
+  # capability. Unset, libfabric uses the device's real capability instead of
+  # asserting one it lacks, so EFA still works; only zero-copy GPU reads are
+  # unavailable, and they were never available on this hardware.
+  #
+  # NCCL_PROTO is likewise not set: aws-ofi-nccl derives it from the hardware
+  # ("Adding NCCL_PROTO=simple to environment"), so a value here would be a
+  # guess overriding a measurement.
   EFA_ARGS=(
     --device /dev/infiniband
     -e FI_PROVIDER=efa
-    -e FI_EFA_USE_DEVICE_RDMA=1
   )
 fi
 if [[ "${NNODES}" -gt 1 ]]; then

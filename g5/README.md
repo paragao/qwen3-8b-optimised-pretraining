@@ -713,8 +713,49 @@ one -- the previous run launched cleanly and the only symptom was being 3x slow
 35 minutes later. An EFA **cannot be attached to a running instance**, so
 enabling this requires relaunching.
 
-Whether it recovers the predicted ~1.8x is **untested**. The arithmetic says it
-is the one change with the leverage, since ~92% of the step is transfer.
+#### CONFIRMED: EFA negotiates. Then a fourth layer bit.
+
+The relaunch on 2026-10-04 proved the three changes above work. Both ranks:
+
+```
+NET/OFI Selected provider is efa, fabric is efa (found 1 nics)
+NET/OFI NIC group 0 device #0 0000:00:1d.0
+```
+
+`No eligible providers were found` is **gone**. Interface, security group and
+container device are all correct, and libfabric opens the fabric.
+
+The run then aborted instantly, both ranks, same second, `SIGABRT`:
+
+```
+FI_EFA_USE_DEVICE_RDMA=1 was set by user, but EFA device has no
+rdma-read capability.  Application will abort().
+```
+
+That variable was **mine**, copied from `eks/pretrain.yaml` and described in the
+commit as matching "the working EKS path". It was not working -- that manifest
+has `USE_EFA: "0"`, so its `FI_EFA_USE_DEVICE_RDMA: "1"` had never once been
+exercised. I propagated an untested value and called its source a precedent.
+
+Worse, the evidence was already in hand: the earlier TCP run's log says
+`Need to force simple protocol: GDR not supported`, and GDR *is* GPUDirect
+RDMA -- the identical capability. g5's A10G-based EFA does not have it.
+
+So the variable is now **unset** on both paths, and libfabric uses the device's
+real capability. EFA still works; only zero-copy GPU reads are unavailable, and
+they never existed on this hardware. Two subtleties worth keeping:
+
+- Emptying the ConfigMap value is **not sufficient** on the EKS path, because
+  the pod script read it as `${FI_EFA_USE_DEVICE_RDMA:-1}` and `:-` substitutes
+  on EMPTY as well as unset -- the default would have silently restored `1`.
+  The test is now on a non-empty value, and an explicit `1` gets a warning
+  naming the abort.
+- Set it only on hardware with rdma-read (p4d/p5 and similar), and confirm with
+  `fi_info -p efa` rather than assuming.
+
+Whether EFA recovers the predicted ~1.8x is **still untested**: no 2-node run
+has yet completed a step over it. The arithmetic says it is the one change with
+the leverage, since ~92% of the step is transfer.
 `eks/set-efa.sh` does the equivalent on the EKS path.
 
 Then on **each** node — identical except `NODE_RANK`, and `MASTER_ADDR` is
@@ -832,12 +873,14 @@ and half the price. The derivation was not wrong about the hardware -- it was
 wrong to assume the launcher configured it.
 
 `g5/launch-instance.sh` now attaches an EFA by default at `NODES=2` (see
-"FIXED" above), so a cluster launched today does not reproduce that figure.
-Whether EFA recovers the predicted ~1.8x is **still untested** -- the only
-2-node measurement on record is the TCP one. The arithmetic says it is the
-single change with the leverage, since ~92% of the step is transfer, but that
-is a prediction, not a result. `USE_EFA=0 NODES=2` reproduces the slow baseline
-deliberately if the two need comparing.
+"FIXED" and "CONFIRMED" above), so a cluster launched today does not reproduce
+that figure. EFA is confirmed to **negotiate** -- both ranks log
+`Selected provider is efa, fabric is efa` -- but whether it recovers the
+predicted ~1.8x is **still untested**: no run has completed a training step
+over it, so the only 2-node throughput on record remains the TCP one. The
+arithmetic says it is the single change with the leverage, since ~92% of the
+step is transfer, but that is a prediction, not a result. `USE_EFA=0 NODES=2`
+reproduces the slow baseline deliberately if the two need comparing.
 
 An EFA interface cannot be added to a running instance, so moving an existing
 cluster onto it means terminating and relaunching.

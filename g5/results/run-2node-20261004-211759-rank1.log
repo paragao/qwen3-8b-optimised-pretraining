@@ -1,0 +1,96 @@
+
+====================
+== NeMo Framework ==
+====================
+
+NVIDIA Release  (build 323980803)
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/usr/local/lib/python3.12/dist-packages/torch/cuda/__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/opt/venv/lib/python3.12/site-packages/comet_ml/error_tracking/api.py:51: UserWarning: We won't be continuing development on SDK 3.0. Please use the last stable version of the SDK to get access to the newest features and fixes. See https://github.com/getsentry/sentry-python/discussions/4955
+  sentry_sdk.init(
+Multiple distributions found for package modelopt. Picked distribution: nvidia-modelopt
+/opt/venv/lib/python3.12/site-packages/modelopt/torch/__init__.py:53: UserWarning: transformers>=5.0 support is experimental. Unified Hugging Face checkpoint export for quantized checkpoints may not work for some models yet.
+  _warnings.warn(
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/models/mimo/config/base_configs.py:12: UserWarning: MimoModelConfig is experimental and still under active development. The API may change without notice in future releases.
+  class MimoModelConfig:
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+`torch_dtype` is deprecated! Use `dtype` instead!
+  dataset: real Megatron-indexed data at /workspace/run/datasets/c4_qwen3
+/opt/Megatron-Bridge/3rdparty/Megatron-LM/megatron/core/transformer/transformer_config.py:1947: UserWarning: full scope is deprecated. Use empty cuda_graph_scope to capture the whole layer.
+  warnings.warn(
+INFO:megatron.bridge.training.utils.log_utils:Setting logging level to 20
+ip-172-31-15-180:197:197 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+ip-172-31-15-180:197:197 [0] NCCL INFO cudaDriverVersion 13020
+ip-172-31-15-180:197:197 [0] NCCL INFO Bootstrap: Using ens5:172.31.15.180<0>
+ip-172-31-15-180:197:197 [0] NCCL INFO NCCL version 2.29.3+cuda13.1
+ip-172-31-15-180:197:197 [0] NCCL INFO NCCL git version stable dcf2a2fbe
+ip-172-31-15-180:197:197 [0] NCCL INFO Comm config Blocking set to 1
+ip-172-31-15-180:197:197 [0] NCCL INFO NCCL_NET_PLUGIN set by environment to ofi
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/Plugin: Loaded net plugin Libfabric (v11)
+ip-172-31-15-180:197:197 [0] NCCL INFO Successfully loaded external network plugin /opt/amazon/aws-ofi-nccl/lib/libnccl-net-ofi.so
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/OFI Initializing aws-ofi-nccl 1.17.3
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/OFI Using Libfabric version 2.3
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/OFI Using CUDA driver version 13020 with runtime 13010
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 1 nics)
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/OFI NIC group 0 device #0 0000:00:1d.0
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 1 nics)
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/OFI Using transport protocol SENDRECV
+ip-172-31-15-180:197:197 [0] NCCL INFO NET/OFI Creating one domain per process
+FI_EFA_USE_DEVICE_RDMA=1 was set by user, but EFA device has no rdma-read capability.  Application will abort().
+E1004 20:17:37.561000 1 torch/distributed/elastic/multiprocessing/api.py:984] failed (exitcode: -6) local_rank: 0 (pid: 197) of binary: /opt/venv/bin/python3
+Traceback (most recent call last):
+  File "/usr/local/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+=========================================================
+/workspace/repo/g5/train.py FAILED
+---------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+---------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-10-04_20:17:37
+  host      : ip-172-31-15-180.us-west-2.compute.internal
+  rank      : 1 (local_rank: 0)
+  exitcode  : -6 (pid: 197)
+  error_file: <N/A>
+  traceback : Signal 6 (SIGABRT) received by PID 197
+=========================================================

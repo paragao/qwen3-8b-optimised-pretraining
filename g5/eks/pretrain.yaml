@@ -134,10 +134,19 @@ data:
   # resource request cannot be toggled by an env var, so that part is a real
   # edit -- g5/eks/set-efa.sh does it for you.
   USE_EFA: "0"
-  # Only consulted when EFA is enabled. efa is the libfabric provider name;
-  # NCCL_PROTO=simple is the conventional setting for EFA with NCCL.
+  # Only consulted when EFA is enabled. efa is the libfabric provider name.
   FI_PROVIDER: "efa"
-  FI_EFA_USE_DEVICE_RDMA: "1"
+  # FI_EFA_USE_DEVICE_RDMA IS DELIBERATELY EMPTY -- do not set it to "1" here.
+  # This manifest carried "1" while USE_EFA was "0", so the value had never
+  # been exercised. On the direct-EC2 path with a real EFA attached it aborted
+  # BOTH ranks immediately (2026-10-04):
+  #   "FI_EFA_USE_DEVICE_RDMA=1 was set by user, but EFA device has no
+  #    rdma-read capability.  Application will abort()."
+  # g5's A10G-based EFA has no GPUDirect RDMA; the same hardware had already
+  # reported "GDR not supported". Left empty, libfabric uses the device's real
+  # capability and EFA works. Set it only on hardware that has rdma-read
+  # (p4d/p5 and similar), and verify with `fi_info -p efa` before trusting it.
+  FI_EFA_USE_DEVICE_RDMA: ""
   NCCL_PROTO: "simple"
 ---
 # Shared dataset volume.
@@ -460,7 +469,19 @@ spec:
                 if [ -e /dev/infiniband/uverbs0 ] || ls /sys/class/infiniband 2>/dev/null | grep -q .; then
                   echo "    transport : EFA requested AND device present"
                   export FI_PROVIDER="${FI_PROVIDER:-efa}"
-                  export FI_EFA_USE_DEVICE_RDMA="${FI_EFA_USE_DEVICE_RDMA:-1}"
+                  # Only export RDMA if explicitly asked for. NOTE the test is
+                  # on a NON-EMPTY value, not `${VAR:-1}`: `:-` substitutes on
+                  # EMPTY as well as unset, so a default of 1 here would undo
+                  # the empty ConfigMap value and abort the run on hardware
+                  # without rdma-read (see the note in the ConfigMap).
+                  if [ -n "${FI_EFA_USE_DEVICE_RDMA:-}" ]; then
+                    export FI_EFA_USE_DEVICE_RDMA
+                    echo "    WARNING: FI_EFA_USE_DEVICE_RDMA=${FI_EFA_USE_DEVICE_RDMA} is set." >&2
+                    echo "             If this device has no rdma-read capability the" >&2
+                    echo "             run will SIGABRT immediately. g5 has none." >&2
+                  else
+                    unset FI_EFA_USE_DEVICE_RDMA
+                  fi
                   export NCCL_PROTO="${NCCL_PROTO:-simple}"
                   fi_info -p efa 2>/dev/null | head -5 | sed 's/^/      /' || true
                 else
