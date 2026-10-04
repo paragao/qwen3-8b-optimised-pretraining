@@ -154,27 +154,65 @@ echo "Logging to ${LOG_FILE}"
 #              connects INTO; a MASTER_PORT-only rule lets the rendezvous
 #              succeed and then hangs the NCCL bootstrap with no error.
 NET_ARGS=(--network bridge)
+
 # Single node keeps WARN so its recorded measurements stay comparable. Multi
 # node defaults to INFO: a transport-level hang prints NOTHING at WARN, which
 # is exactly the case where the log is the only evidence available.
 NCCL_DEBUG_DEFAULT=WARN
+
+# ------------------------------------------------------------------------ EFA
+# The container needs the fabric device passed in; the host having an EFA is not
+# enough. The stock NeMo image already carries the software half -- the
+# 2026-10-04 run logged "Initializing aws-ofi-nccl 1.17.3" and "Using Libfabric
+# version 2.3" -- and still fell back to TCP with "No eligible providers were
+# found", because there was no device for libfabric to open. So the only thing
+# missing is /dev/infiniband and the provider selection.
+#
+# AUTODETECTED rather than configured: the device is either present or it is
+# not, and a USE_EFA flag here could only ever disagree with the hardware. The
+# same detection is what lets this script stay correct on a node launched with
+# USE_EFA=0, where it must NOT pass a device that does not exist.
+EFA_ARGS=()
+EFA_STATUS="absent"
+if [[ -d /dev/infiniband ]]; then
+  EFA_STATUS="present"
+  # FI_PROVIDER=efa selects the fabric provider; the ulimits below already lift
+  # memlock, which EFA needs for its registered memory. FI_EFA_USE_DEVICE_RDMA
+  # matches what g5/eks/pretrain.yaml sets on the working EKS path.
+  #
+  # NCCL_PROTO is deliberately NOT set: aws-ofi-nccl already logged "Adding
+  # NCCL_PROTO=simple to environment" and "Need to force simple protocol: GDR
+  # not supported" on its own, so the plugin decides it from the hardware. A
+  # hardcoded value here would be a guess overriding a measurement.
+  EFA_ARGS=(
+    --device /dev/infiniband
+    -e FI_PROVIDER=efa
+    -e FI_EFA_USE_DEVICE_RDMA=1
+  )
+fi
 if [[ "${NNODES}" -gt 1 ]]; then
   NET_ARGS=(--network host)
   NCCL_DEBUG_DEFAULT=INFO
   echo "Multi-node: ${NNODES} nodes, this is NODE_RANK=${NODE_RANK}"
   echo "  rendezvous : ${MASTER_ADDR}:${MASTER_PORT} (private VPC address)"
   echo "  reachable by: instances in the same security group only"
-  echo "  NOTE: on g5.8xlarge AS LAUNCHED this is MEASURED SLOWER than one"
-  echo "        node. The 2026-10-04 1000-iteration run at GBS=16 gave"
-  echo "        8,086 tok/s against 24,727 tok/s on a single node at the"
-  echo "        same geometry -- 0.33x, a 3x slowdown."
-  echo "        CAUSE: g5.8xlarge SUPPORTS EFA (1 interface) but the"
-  echo "        launcher attaches a plain ENA, so NCCL finds no libfabric"
-  echo "        provider and the ~1 GB per-step gradient exchange crosses"
-  echo "        TCP at ~4 Gbit/s of a 25 Gbit link. The 2.0s step time IS"
-  echo "        that transfer, so raising GLOBAL_BATCH_SIZE cannot fix it."
-  echo "        Use 1 node until an EFA interface is attached at launch."
-  echo "        See g5/README.md and g5/eks/set-efa.sh."
+  echo "  EFA device : ${EFA_STATUS} (/dev/infiniband)"
+  if [[ "${EFA_STATUS}" == "present" ]]; then
+    echo "        Passing the device into the container and selecting the efa"
+    echo "        libfabric provider. Confirm it took effect: the NCCL log must"
+    echo "        NOT contain 'No eligible providers were found'."
+  else
+    echo "  WARNING: no EFA device on this host, so NCCL will fall back to TCP."
+    echo "        MEASURED consequence (2026-10-04, 1000 iterations, GBS=16):"
+    echo "        8,086 tok/s against 24,727 tok/s on a SINGLE node at the same"
+    echo "        geometry -- 0.33x, i.e. a 3x SLOWDOWN from adding a node. The"
+    echo "        ~1 GB per-step gradient exchange crosses TCP at ~4 Gbit/s of"
+    echo "        a 25 Gbit link, and the 2.0s step time IS that transfer, so"
+    echo "        raising GLOBAL_BATCH_SIZE cannot fix it."
+    echo "        An EFA cannot be attached to a RUNNING instance. Relaunch:"
+    echo "          NODES=2 USE_EFA=1 ./g5/launch-instance.sh"
+    echo "        Use 1 node until then. See g5/README.md."
+  fi
 fi
 
 # Prompt output is operationally load-bearing, not cosmetic. g5/run.sh's stdout
@@ -198,6 +236,7 @@ docker run --rm \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   "${NET_ARGS[@]}" \
+  "${EFA_ARGS[@]+${EFA_ARGS[@]}}" \
   -v "${REPO_DIR}:/workspace/repo:ro" \
   -v "${RUN_BASE}:/workspace/run" \
   -e RUN_BASE=/workspace/run \

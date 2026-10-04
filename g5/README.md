@@ -665,9 +665,9 @@ $ aws ec2 describe-instance-types --instance-types g5.8xlarge \
 Efa: True,  Max: 1
 ```
 
-What is actually true is that `g5/launch-instance.sh` attaches a plain ENA, so
-the running nodes report `InterfaceType: "interface"` rather than `"efa"`, and
-libfabric therefore finds no provider:
+What was actually true is that `g5/launch-instance.sh` attached a plain ENA, so
+the nodes reported `InterfaceType: "interface"` rather than `"efa"`, and
+libfabric therefore found no provider:
 
 ```
 NET/OFI No eligible providers were found
@@ -675,13 +675,47 @@ NET/OFI Selected provider is tcp, fabric is 172.31.32.0/20 (found 1 nics)
 NET/OFI Need to force simple protocol: GDR not supported
 ```
 
-So inter-node traffic falls back to plain TCP over `ens5` with no GPUDirect and
-`NCCL_PROTO=simple` forced. That is a **launch-configuration gap, fixable by
-attaching an EFA interface at launch** (`InterfaceType=efa`, max 1 on this
-type), not a property of the instance type. The EKS path already handles this --
-see [`eks/set-efa.sh`](eks/set-efa.sh) -- while the direct-EC2 launcher does
-not. Measured consequence: 4.08 Gbit/s achieved of a nominal 25 Gbit/s, and a
-3x slowdown versus one node (see the measured table below).
+So inter-node traffic fell back to plain TCP over `ens5` with no GPUDirect and
+`NCCL_PROTO=simple` forced -- a **launch-configuration gap, not a property of
+the instance type.** Measured consequence: 4.08 Gbit/s of a nominal 25 Gbit/s,
+and a 3x slowdown versus one node (see the measured table below).
+
+#### FIXED: the launcher now attaches an EFA at 2 nodes
+
+`USE_EFA` defaults to `1` when `NODES=2` and to `0` at `NODES=1`, where there is
+no inter-node traffic for it to carry. Three things had to change together,
+because any one alone leaves NCCL on TCP:
+
+| layer | change | why alone it is not enough |
+|---|---|---|
+| interface | `run-instances --network-interfaces "...InterfaceType=efa..."` | without a device, libfabric has no provider to open |
+| security group | `IpProtocol=-1` self-referencing, replacing `tcp/1-65535` | **EFA is not TCP**, so a TCP rule silently blocks it |
+| container | `--device /dev/infiniband` plus `FI_PROVIDER=efa` | the host having an EFA does not make it visible in the container |
+
+The security-group half is the one that looks done and is not: AWS's guide calls
+the self-referencing all-traffic rule "mandatory for EFA to function. Without
+these rules, EFA traffic between instances will be blocked and NCCL
+communication will fail." The launcher now asserts the protocol is `-1` when
+`USE_EFA=1` and **refuses to launch** against a `tcp/1-65535` rule, which is the
+exact shape that passed every previous check while costing 3x in throughput.
+Exposure is unchanged in kind: still self-referencing, still no CIDR. The rule
+widens the protocol set, not the source set.
+
+No custom image is needed. The stock `nvcr.io/nvidia/nemo:26.04` already logged
+`Initializing aws-ofi-nccl 1.17.3` and `Using Libfabric version 2.3` on the
+failing run -- the software was always there, with no device to use. The
+container-side detection is on `/dev/infiniband` rather than a flag, so the same
+`run.sh` stays correct on a `USE_EFA=0` node.
+
+After launch the script asserts every node reports `InterfaceType: "efa"` and
+refuses otherwise, because requesting an interface is not evidence of getting
+one -- the previous run launched cleanly and the only symptom was being 3x slow
+35 minutes later. An EFA **cannot be attached to a running instance**, so
+enabling this requires relaunching.
+
+Whether it recovers the predicted ~1.8x is **untested**. The arithmetic says it
+is the one change with the leverage, since ~92% of the step is transfer.
+`eks/set-efa.sh` does the equivalent on the EKS path.
 
 Then on **each** node — identical except `NODE_RANK`, and `MASTER_ADDR` is
 rank 0's **private** address on both (the launcher prints the exact commands):
@@ -792,15 +826,21 @@ providers were found`, falling back to `Selected provider is tcp` with
 = 18.5 Gbit/s, which TCP at 4.08 Gbit/s cannot approach but EFA on a 25 Gbit
 link plausibly can.
 
-**Practical conclusion: do not add a second `g5.8xlarge` until EFA is
-attached.** As launched today, one node is 3x faster and half the price. The
-derivation above was not wrong about the hardware -- it was wrong to assume the
-launcher configured it. The open question, untested, is whether attaching an
-EFA interface recovers the predicted ~1.8x; the arithmetic above says it is the
-single change with the leverage to do so, since the step is ~92% transfer.
-`eks/set-efa.sh` already does this on the EKS path; the direct-EC2 launcher
-needs the same treatment, and that requires relaunching the instances because
-an EFA interface cannot be added to a running one.
+**Practical conclusion: do not add a second `g5.8xlarge` without EFA.** The
+0.33x above is what a plain-ENA pair measures, and there one node is 3x faster
+and half the price. The derivation was not wrong about the hardware -- it was
+wrong to assume the launcher configured it.
+
+`g5/launch-instance.sh` now attaches an EFA by default at `NODES=2` (see
+"FIXED" above), so a cluster launched today does not reproduce that figure.
+Whether EFA recovers the predicted ~1.8x is **still untested** -- the only
+2-node measurement on record is the TCP one. The arithmetic says it is the
+single change with the leverage, since ~92% of the step is transfer, but that
+is a prediction, not a result. `USE_EFA=0 NODES=2` reproduces the slow baseline
+deliberately if the two need comparing.
+
+An EFA interface cannot be added to a running instance, so moving an existing
+cluster onto it means terminating and relaunching.
 
 The original derivation is reproduced from the single-node measured figures in
 [`results/validation-run.md`](results/validation-run.md). Note that scaling the
