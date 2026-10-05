@@ -156,26 +156,95 @@ Job. `kubectl apply -k` needs no extra tooling — kustomize is built into
 > to the instance. If you change `g5/train.py` and want the cluster to run it,
 > push the change and point `REPO_REF` at your branch or commit.
 
+### Step 0 — credentials, kubeconfig, and proving you can reach the cluster
+
+Do this first. `g5/PREREQUISITES.md` covers the AWS side and **applies to this
+path too**, not only to EC2.
+
+```bash
+# 1. Prove you have credentials. If this fails, nothing below will work.
+aws sts get-caller-identity
+
+# 2. Write a kubeconfig entry for your cluster and select it.
+aws eks update-kubeconfig --name <your-cluster> --region <your-region>
+
+# 3. Prove you can actually reach the Kubernetes API.
+kubectl get nodes
+```
+
+Step 3 is not redundant. **AWS credentials do not grant Kubernetes access** —
+they are separate systems. `update-kubeconfig` only writes a local file and never
+checks whether you can use it, so it succeeds even when you have no access at
+all, and the failure surfaces one step later as:
+
+```
+error: You must be logged in to the server (the server has asked for the client to provide credentials)
+```
+
+That message reads like expired credentials and usually is not. If
+`aws sts get-caller-identity` worked, the cause is RBAC — your principal has no
+EKS access entry and no `aws-auth` mapping on that cluster. Check with
+`aws eks list-access-entries --cluster-name <your-cluster> --region <your-region>`
+and have the cluster owner add you; re-running `update-kubeconfig` will not help.
+
+### Step 1 — confirm it is the RIGHT cluster
+
+`kubectl apply -k` goes to whatever context is current, and **the GPU check below
+cannot catch a wrong one.** If you have more than one cluster configured, this is
+the step that stops you creating a namespace, a PVC and two training Jobs on
+somebody else's cluster.
+
+```bash
+# Which cluster am I pointed at?
+kubectl config current-context
+
+# What are these nodes REALLY, and where?
+kubectl get nodes -o custom-columns=NAME:.metadata.name,\
+TYPE:.metadata.labels.'node\.kubernetes\.io/instance-type',\
+ZONE:.metadata.labels.'topology\.kubernetes\.io/zone'
+```
+
+You want `g5.8xlarge` in the `TYPE` column. Any other GPU instance type will
+advertise `nvidia.com/gpu` and sail through the next check while running a model
+sized for a 24 GB A10G on the wrong hardware — the measured numbers in
+[Results](#results) will not reproduce and nothing will tell you why.
+
+For **scenario 2**, the `ZONE` column must show two `g5.8xlarge` nodes in **the
+same** zone. Cross-AZ puts every gradient all-reduce over an AZ boundary, and the
+all-reduce is already the limiting factor. A node group spread across three AZs
+is the normal default and is *not* what you want here.
+
 ### Cluster prerequisites (both scenarios)
 
 ```bash
 # 1. An EKS cluster with a g5.8xlarge node group — 1 node for scenario 1,
-#    2 nodes IN ONE SUBNET AND AZ for scenario 2.
+#    2 nodes IN ONE SUBNET AND AZ for scenario 2 (verify with Step 1 above).
 
 # 2. The NVIDIA device plugin, so the nodes advertise nvidia.com/gpu
 kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml
 kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.'nvidia\.com/gpu'
 ```
 
-An empty `GPU` column means the training pod will never schedule.
+An empty `GPU` column means the training pod will never schedule. A *populated*
+one means only that the nodes have NVIDIA GPUs — it does not mean they are
+A10Gs. Step 1 is what checks that.
 
 **StorageClass.** The base PVC requests `ReadWriteMany` on a class named
-`efs-sc`, because at 2 nodes both pods mmap the same `.bin`/`.idx` and an EBS
-volume cannot be mounted by two nodes — the second pod hangs `Pending`. If your
-cluster has no `efs-sc`, the PVC stays `Pending` and nothing starts. For
-**scenario 1 only**, any `ReadWriteOnce` class will do; add this to
-`g5/single-node/kustomization.yaml` under `patches:` and substitute your own
-class name:
+`efs-sc`. Check whether you have one *before* applying anything — a missing class
+is the single most likely reason nothing starts:
+
+```bash
+kubectl get storageclass
+kubectl get storageclass efs-sc    # NotFound here means read the next paragraph
+```
+
+RWX is required at 2 nodes, because both pods mmap the same `.bin`/`.idx` and an
+EBS volume cannot be mounted by two nodes — the second pod hangs `Pending`. If
+`efs-sc` does not exist, the PVC stays `Pending`, both pods stay `Pending`, and
+the `wait` in step 3 burns its full timeout before telling you anything. For
+**scenario 1 only**, any `ReadWriteOnce` class from `kubectl get storageclass`
+will do; add this to `g5/single-node/kustomization.yaml` at the end, under the
+existing `patches:` key, substituting your own class name:
 
 ```yaml
   - target:
@@ -201,13 +270,19 @@ class name:
 # 2. Create the namespace, config, PVC, Service and both Jobs
 kubectl apply -k g5/single-node/
 
-# 3. Wait for the CPU-only dataset build (~10 min; 30 min cold, 77 GB image pull)
+# 3. CHECK IT STARTED, before you wait on anything. Both pods must reach
+#    Running, and the PVC must be Bound. This takes seconds; step 4 takes
+#    half an hour and cannot tell you what step 3 tells you now.
+kubectl -n qwen3-pretrain get pods,pvc
+
+# 4. Only once step 3 looks right: wait for the CPU-only dataset build
+#    (~10 min; 30 min cold, because of the 77 GB image pull)
 kubectl -n qwen3-pretrain wait --for=condition=complete job/c4-prep --timeout=30m
 
-# 4. Watch the training run
+# 5. Watch the training run
 kubectl -n qwen3-pretrain logs -f job/qwen3-pretrain -c train
 
-# 5. Teardown — everything is namespaced
+# 6. Teardown — everything is namespaced
 kubectl delete namespace qwen3-pretrain
 ```
 
@@ -216,6 +291,61 @@ Measured: **1,009,385,472 parameters, 19.08 GiB peak allocated (84.8% of
 measured ceiling, not a cautious default — 2048 at this geometry OOMed after one
 iteration with 38 MiB free. EFA is deliberately off: at one node there is no
 inter-node traffic for it to carry.
+
+### When nothing happens — read this before waiting 30 minutes
+
+Everything in this section fails *quietly*. These are the three traps, all three
+observed on a real cluster:
+
+**`wait` tells you nothing.** After its full timeout it prints exactly:
+
+```
+error: timed out waiting for the condition on jobs/c4-prep
+```
+
+No mention of the pod, the volume or the scheduler. That is why step 3 above
+comes first.
+
+**`logs` is silent and exits 0.** Against a pod that has not started — and will
+never start — every form of the command returns **zero bytes with exit status
+0**: `logs job/...`, `logs -f job/...`, and the label-selector form. You cannot
+tell "not started yet" from "wrong command" from "finished, printed nothing".
+Silence here is not reassurance.
+
+**So ask the pod directly.** This is the command that actually answers the
+question, and it is the one a reader is most likely not to think of:
+
+```bash
+kubectl -n qwen3-pretrain get pods
+kubectl -n qwen3-pretrain describe pod -l app=qwen3-pretrain | sed -n '/Events:/,$p'
+```
+
+| what `describe` says | what it means |
+|---|---|
+| `pod has unbound immediate PersistentVolumeClaims` | the PVC never bound — check `kubectl -n qwen3-pretrain get pvc`; almost always a missing `efs-sc` StorageClass |
+| `Insufficient nvidia.com/gpu` | no GPU capacity free, or the device plugin is not running |
+| `Insufficient vpc.amazonaws.com/efa` | scenario 2 on nodes without EFA — see its prerequisites |
+| `0/N nodes are available` + taint messages | the g5 nodes carry taints your pod does not tolerate |
+
+**Do not use `--dry-run=server` as a pre-flight.** It looks like the careful
+thing to do and produces five alarming errors that are pure artefact — the
+namespace is not really created in a dry run, so every namespaced object reports
+`namespaces "qwen3-pretrain" not found`. The manifest is fine. Use
+`./g5/scenario-check.sh` and `kubectl kustomize g5/single-node/` to inspect it
+instead.
+
+**If teardown is refused or hangs.** `kubectl delete namespace` can block for
+minutes on finalizers with no output, and some environments block the command
+outright. Delete the objects individually instead — this leaves only an empty
+namespace behind:
+
+```bash
+kubectl -n qwen3-pretrain delete job c4-prep qwen3-pretrain --ignore-not-found
+kubectl -n qwen3-pretrain delete pvc qwen3-data --ignore-not-found
+kubectl -n qwen3-pretrain delete svc qwen3-rdzv --ignore-not-found
+kubectl -n qwen3-pretrain delete configmap qwen3-config --ignore-not-found
+```
+
 
 ### Scenario 2 — two nodes over EFA, DP=2, ~1.5B parameters
 
@@ -232,10 +362,17 @@ kubectl get nodes -o custom-columns=NAME:.metadata.name,EFA:.status.allocatable.
 ```
 
 If that column is empty the pods stay `Pending` with
-`Insufficient vpc.amazonaws.com/efa`. **The node group must have been created
-with EFA on its launch template** — an EFA interface cannot be added to a running
-node, so a node group without one has to be replaced. Neither the plugin nor any
-script here can do it for you.
+`Insufficient vpc.amazonaws.com/efa`. Two distinct causes, and the plugin being
+installed rules out neither:
+
+- **The node group was not created with EFA on its launch template.** An EFA
+  interface cannot be added to a running node, so such a node group has to be
+  replaced. Neither the plugin nor any script here can do it for you.
+- **The nodes are not labelled.** The Helm chart's DaemonSet selects
+  `efa=true`, so on an unlabelled cluster it sits at `DESIRED 0` and advertises
+  nothing while looking installed. Confirm with
+  `kubectl get ds -n kube-system aws-efa-k8s-device-plugin` — a `DESIRED` of 0
+  means no node matched, not that the chart failed.
 
 The node security group must also allow **all traffic both ways to and from
 itself**. Not inbound only, and not a CIDR rule: EFA is not IP, so the default
@@ -246,6 +383,11 @@ with `Unresponsive receiver (reachable by EFA device but handshake failed)`.
 ```bash
 ./g5/scenario-check.sh multi-node
 kubectl apply -k g5/multi-node/
+
+# CHECK IT STARTED FIRST. Both pods must be Running and the PVC Bound. At two
+# nodes there are TWO pods, and seeing only one is itself the symptom — most
+# often `Insufficient vpc.amazonaws.com/efa` on the second node.
+kubectl -n qwen3-pretrain get pods,pvc -o wide
 
 kubectl -n qwen3-pretrain wait --for=condition=complete job/c4-prep --timeout=30m
 
@@ -258,6 +400,12 @@ kubectl -n qwen3-pretrain logs -f -l app=qwen3-pretrain -c train \
 
 kubectl delete namespace qwen3-pretrain
 ```
+
+Everything in [When nothing happens](#when-nothing-happens--read-this-before-waiting-30-minutes)
+applies here too, and more so: this scenario can also hang at the rendezvous with
+both pods `Running` and no error anywhere. If rank 1 never appears, check that
+the two pods landed in the **same availability zone** (the Step 1 command shows
+`ZONE`) and that both nodes advertise the EFA resource.
 
 Measured: **1,490,550,784 parameters, 19.27 GiB peak allocated (85.7%), 5,753
 tok/s** over 1000 iterations, loss 11.3351 → 5.4236, 0 skipped and 0 NaN.
@@ -300,8 +448,12 @@ the rendezvous stays headless with no NodePort, LoadBalancer or `hostNetwork`.
 Each scenario's own README has the full detail, including which figures are
 measured and which are still predicted:
 [`g5/single-node/README.md`](g5/single-node/README.md),
-[`g5/multi-node/README.md`](g5/multi-node/README.md). For the EC2 path instead of
-Kubernetes, start at [`g5/PREREQUISITES.md`](g5/PREREQUISITES.md).
+[`g5/multi-node/README.md`](g5/multi-node/README.md).
+[`g5/PREREQUISITES.md`](g5/PREREQUISITES.md) covers the AWS-account side —
+credentials, the GPU vCPU quota, cost — and applies to **both** this path and the
+direct-EC2 one. [`g5/results/eks-human-run-notes.md`](g5/results/eks-human-run-notes.md)
+records a step-by-step run of this section on a real cluster, including the
+eleven things that went wrong and which of them these instructions now cover.
 
 ## Model Architecture: Qwen3-8B
 
