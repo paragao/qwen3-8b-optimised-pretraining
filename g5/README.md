@@ -1109,6 +1109,16 @@ was refuted by the `deeper` run.
 [`g5/eks/pretrain.yaml`](eks/pretrain.yaml) runs the same `g5/train.py` on 1 or
 2 g5.8xlarge pods. One file, six resources, all namespaced.
 
+> **For a reproducible run, prefer the two scenario overlays** —
+> `kubectl apply -k g5/single-node/` or `kubectl apply -k g5/multi-node/`, which
+> pin a measured geometry on top of this base and are checked against the
+> direct-EC2 path by `./g5/scenario-check.sh`. The rest of this section is the
+> base manifest itself: applying it directly gives the 4-layer `smoke` geometry
+> at one node, which is the right thing when you are changing the manifest and
+> the wrong thing when you want a number to compare. See
+> [the top-level README](../README.md#running-the-g5-scenarios-on-eks) for the
+> end-to-end recipes.
+
 ### Prerequisites
 
 1. An EKS cluster with a g5.8xlarge node group (1 or 2 nodes).
@@ -1232,6 +1242,10 @@ changes nothing.
   limit is 96Gi.
 - `backoffLimit: 0`: a distributed job cannot usefully restart one rank out of
   two, so it fails rather than retrying into a half-dead rendezvous.
-- EFA is supported on g5.8xlarge but **not** wired up here; the manifest uses
-  the TCP path, which needs no device plugin. The scaling tables above assume
-  EFA, so measured 2-node throughput will be somewhat below them.
+- EFA **is** wired up, two ways. The base manifest ships with it off — a pod
+  requesting a resource no node advertises stays `Pending` forever, which is the
+  wrong default for a single-node manifest. `./g5/eks/set-efa.sh on` turns it on
+  in the base, and `g5/multi-node/` enables it as a kustomize overlay. It is
+  measured at **3.1x TCP**, so a 2-node run that silently falls back to TCP is
+  not "somewhat" below the scaling tables above — it is 3x below. The training
+  container detects a missing device and says so rather than hiding it.
