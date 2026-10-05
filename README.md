@@ -15,6 +15,33 @@ Pre-training **Qwen3-8B** (8.2B dense parameters) on 1T tokens comparing two GPU
 
 Both clusters are compute-saturated with perfect communication overlap. AllReduce and AllGather are fully hidden behind compute.
 
+## No cluster? Validate the whole stack on one cheap GPU
+
+The results above need a Slurm cluster with H200s or B300s. If you want to
+exercise **the same NeMo 26.04 / Megatron-Bridge stack** — same training script,
+same container, real `c4` data, real EFA — on hardware you can start in five
+minutes for a couple of dollars, use **[`g5/`](g5/README.md)**.
+
+It runs a proportionally scaled Qwen3 on `g5.8xlarge` (one 24 GB A10G, ~$2.45/hr)
+instead of 16 H200s, as two reproducible scenarios with both an EC2 and a
+Kubernetes path:
+
+| | hardware | model | measured | cost |
+|---|---|---|---|---|
+| **[`g5/single-node/`](g5/single-node/README.md)** | 1x g5.8xlarge | 1.01 B params | 19.08 GiB, 7,085 tok/s | ~$2 |
+| **[`g5/multi-node/`](g5/multi-node/README.md)** | 2x g5.8xlarge + EFA | 1.49 B params | 19.27 GiB, 5,753 tok/s | ~$7 |
+
+Start with **[`g5/PREREQUISITES.md`](g5/PREREQUISITES.md)** — AWS credentials,
+the GPU vCPU quota (the usual hard stop), and a paste-in block that checks
+everything before you spend anything.
+
+What it is good for, and what it is not: it validates the stack, the fabric and
+the memory model, and it carries a calibrated memory predictor
+([`g5/predict.py`](g5/predict.py)) that reproduces every run measured so far.
+It is **not** a performance comparison with the clusters above — a 24 GB A10G
+holds a model ~5x smaller than Qwen3-8B. Each scenario README is explicit about
+which of its numbers are measured and which are still predicted.
+
 ## Prerequisites
 
 - **Slurm** workload manager with **PyXis + Enroot** container runtime
@@ -159,10 +186,21 @@ Checkpoints are saved to `/fsx/ubuntu/qwen3-8b-pretraining/checkpoints`.
 │   ├── train.py           ← Megatron-Bridge training script
 │   └── slurm/
 │       └── run.sh         ← Slurm submission script
-└── b300/
-    ├── train.py           ← Megatron-Bridge training script
-    └── slurm/
-        └── run.sh         ← Slurm submission script
+├── b300/
+│   ├── train.py           ← Megatron-Bridge training script
+│   └── slurm/
+│       └── run.sh         ← Slurm submission script
+└── g5/                    ← single-GPU validation on cheap hardware, no Slurm
+    ├── README.md          ← measured results + the memory model
+    ├── PREREQUISITES.md   ← START HERE: tools, credentials, quota, cost
+    ├── predict.py         ← calibrated memory predictor (--self-check)
+    ├── launch-instance.sh ← provision, terminate-instance.sh tears down
+    ├── prepare-c4.sh      ← tokenize real c4 on the instance
+    ├── finish-run.sh      ← 1-node driver; finish-run-2node.sh for 2
+    ├── single-node/       ← scenario 1: scenario.env + kustomization.yaml
+    ├── multi-node/        ← scenario 2: + max-model.py sizing search
+    ├── eks/               ← shared kustomize base for both scenarios
+    └── results/           ← logs from every run on record
 ```
 
 ## License

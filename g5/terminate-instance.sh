@@ -11,8 +11,15 @@
 #   ./g5/terminate-instance.sh i-0123456789 i-0abc    # explicit, two nodes
 set -euo pipefail
 
-AWS_PROFILE="${AWS_PROFILE:-compute-sa-team-Administrator}"
-export AWS_PROFILE
+# See launch-instance.sh: no forced profile default, or this fails with
+# ProfileNotFound for anyone without that exact profile. Terminating is the one
+# script that must never fail for an avoidable reason -- it is what stops the
+# billing.
+if [[ -n "${AWS_PROFILE:-}" ]]; then
+  export AWS_PROFILE
+else
+  unset AWS_PROFILE
+fi
 REGION="${REGION:-us-west-2}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

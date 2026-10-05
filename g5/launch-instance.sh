@@ -16,8 +16,16 @@
 # group if they already exist.
 set -euo pipefail
 
-AWS_PROFILE="${AWS_PROFILE:-compute-sa-team-Administrator}"
-export AWS_PROFILE
+# Respect an AWS_PROFILE the caller already exported; otherwise leave it UNSET
+# so the standard credential chain applies (env vars, SSO, default profile,
+# instance role). This used to default to a specific team profile name, which
+# made every aws call here die with ProfileNotFound for anyone who did not
+# happen to have that exact profile -- i.e. for everyone cloning the repo.
+if [[ -n "${AWS_PROFILE:-}" ]]; then
+  export AWS_PROFILE
+else
+  unset AWS_PROFILE
+fi
 REGION="${REGION:-us-west-2}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-g5.8xlarge}"
 NAME="${NAME:-qwen3-g5-validation}"

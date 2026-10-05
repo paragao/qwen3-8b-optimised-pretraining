@@ -213,28 +213,61 @@ the conservative reading is correct and the optimistic one is refuted.
 
 ## Reproduce on EC2 directly
 
+**First: [`../PREREQUISITES.md`](../PREREQUISITES.md).** It covers the AWS
+credentials, the `session-manager-plugin` install, the IAM permission the
+launcher needs and the GPU vCPU quota — and ends with a paste-in block that
+checks all of them before you spend anything. **This scenario needs 64 vCPUs of
+G-instance quota** (32 per node), twice the single-node requirement, and raising
+a quota can take a day.
+
+Then, from a clone of this repo:
+
 ```bash
-cd /path/to/qwen3-g5-validate
-set -a; . g5/multi-node/scenario.env; set +a   # FIRST: USE_EFA is read by the
-                                               # launcher, not by the run driver
-NODES=2 ./g5/launch-instance.sh                # attaches EFA, sets the SG shape
-./g5/fix-cluster-sg.sh                         # only if the SG predates EFA support
+git clone https://github.com/paragao/qwen3-8b-optimised-pretraining.git
+cd qwen3-8b-optimised-pretraining
+git checkout feat/g5-single-gpu-validation
+
+export REGION=us-west-2                   # or wherever you have G quota
+
+# 1. Load the scenario FIRST -- see the ordering note below.
+set -a; . g5/multi-node/scenario.env; set +a
+
+# 2. Launch two g5.8xlarge with EFA attached (~5 min).
+NODES=2 ./g5/launch-instance.sh
+
+# 3. Only if your security group predates EFA support in this repo. Safe to
+#    run always: it converges the group and is a no-op when already correct.
+./g5/fix-cluster-sg.sh
+
+# 4. Bootstrap both nodes, build and verify the dataset on each, sync
+#    Megatron's index cache, then train 1000 iterations. Allow ~30 min on cold
+#    nodes for the 77 GB container pull, then ~48 min of training.
 ./g5/finish-run-2node.sh
-./g5/terminate-instance.sh i-0aaa i-0bbb       # both ids; ~$4.90/hr for the pair
+
+# 5. TERMINATE BOTH. The pair bills ~$4.90/hr whether or not it is busy.
+#    Every argument is an instance id; the launcher prints both.
+./g5/terminate-instance.sh i-0aaa i-0bbb
 ```
 
-Order matters. `USE_EFA` is a **provisioning** knob — `launch-instance.sh`
-attaches the interface and chooses the security-group shape, and
-`fix-cluster-sg.sh` converges an existing group. The run itself **autodetects**
-the fabric from `/dev/infiniband`, because the device is either there or it is
-not and a flag could only disagree with the hardware. Sourcing `scenario.env`
-after the launch would leave `USE_EFA` with nothing to act on. (`USE_EFA=1` is
-already the default at `NODES=2`, so a launch without it is still correct — the
-ordering is about the file meaning what it says.)
+Total wall clock is roughly **90 minutes** and about **$7**.
+
+Order matters at step 1. `USE_EFA` is a **provisioning** knob —
+`launch-instance.sh` attaches the interface and chooses the security-group
+shape, and `fix-cluster-sg.sh` converges an existing group. The run itself
+**autodetects** the fabric from `/dev/infiniband`, because the device is either
+there or it is not and a flag could only disagree with the hardware. Sourcing
+`scenario.env` after the launch would leave `USE_EFA` with nothing to act on.
+(`USE_EFA=1` is already the default at `NODES=2`, so a launch without it is
+still correct — the ordering is about the file meaning what it says.)
 
 The driver builds the c4 dataset on both nodes, verifies they are
 byte-identical, syncs Megatron's index cache (there is no shared filesystem),
-and retrieves both ranks' logs.
+and retrieves both ranks' logs into `g5/results/`.
+
+If the run dies partway, the nodes keep their container image and dataset, so
+re-running step 4 resumes from there rather than repeating the 30-minute cold
+start. Nothing is cleaned up implicitly — step 5 is the only thing that stops
+the billing.
 
 ## Reproduce on Kubernetes
 

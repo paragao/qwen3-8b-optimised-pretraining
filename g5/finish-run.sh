@@ -20,10 +20,11 @@
 # valid for 60 seconds, never written to the instance's persistent
 # authorized_keys. No port is opened to 0.0.0.0/0.
 #
-# PREREQUISITES
-#   * aws CLI with credentials for account 159553542841
-#   * session-manager-plugin installed (you have it at /usr/local/bin)
-#   * run from the root of this repo, on the branch holding the fix
+# PREREQUISITES -- see g5/PREREQUISITES.md for the full list and a check block
+#   * aws CLI v2 with working credentials (any profile; none is forced)
+#   * session-manager-plugin installed -- REQUIRED, it is how this reaches the
+#     instance, and it is a separate install from the aws CLI
+#   * run from the root of this repo
 #
 # USAGE
 #   ./g5/finish-run.sh
@@ -35,7 +36,19 @@ set -euo pipefail
 INSTANCE_ID="${INSTANCE_ID:-i-09ee99ff5540c60ec}"
 REGION="${REGION:-us-east-1}"
 AZ="${AZ:-us-east-1b}"
-PROFILE="${AWS_PROFILE_NAME:-compute-sa-team-Administrator}"
+# No forced profile default. AWS_PROFILE_NAME (or AWS_PROFILE) is honoured if
+# the caller set one; otherwise nothing is passed and the standard credential
+# chain applies -- env vars, SSO, default profile, instance role. This used to
+# default to a specific team profile, so every aws call died with
+# ProfileNotFound for anyone cloning the repo. Exported rather than passed as
+# --profile so the ssh ProxyCommand child inherits it too.
+if [[ -n "${AWS_PROFILE_NAME:-}" ]]; then
+  export AWS_PROFILE="${AWS_PROFILE_NAME}"
+elif [[ -n "${AWS_PROFILE:-}" ]]; then
+  export AWS_PROFILE
+else
+  unset AWS_PROFILE
+fi
 OS_USER="${OS_USER:-ubuntu}"
 REMOTE_REPO="${REMOTE_REPO:-/home/ubuntu/qwen3-g5/qwen3-8b-optimised-pretraining}"
 
@@ -65,14 +78,14 @@ fi
 echo "    g5/train.py has both the tensorboard_dir fix and throughput reporting."
 
 say "Confirming the instance is running and the SSM agent is online"
-state=$(aws --profile "${PROFILE}" --region "${REGION}" ec2 describe-instances \
+state=$(aws --region "${REGION}" ec2 describe-instances \
   --instance-ids "${INSTANCE_ID}" \
   --query "Reservations[0].Instances[0].State.Name" --output text)
 if [[ "${state}" != "running" ]]; then
   echo "FATAL: instance ${INSTANCE_ID} is '${state}', not 'running'." >&2
   exit 1
 fi
-ping_status=$(aws --profile "${PROFILE}" --region "${REGION}" ssm describe-instance-information \
+ping_status=$(aws --region "${REGION}" ssm describe-instance-information \
   --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
   --query "InstanceInformationList[0].PingStatus" --output text)
 if [[ "${ping_status}" != "Online" ]]; then
@@ -84,7 +97,7 @@ echo "    instance running, SSM agent Online."
 say "Generating a one-shot ed25519 key"
 ssh-keygen -t ed25519 -N "" -C "g5-validation-ephemeral" -f "${KEY}" >/dev/null
 
-PROXY="aws --profile ${PROFILE} --region ${REGION} ssm start-session \
+PROXY="aws --region ${REGION} ssm start-session \
 --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
 
 SSH_OPTS=(
@@ -101,7 +114,7 @@ SSH_OPTS=(
 )
 
 push_key() {
-  aws --profile "${PROFILE}" --region "${REGION}" ec2-instance-connect send-ssh-public-key \
+  aws --region "${REGION}" ec2-instance-connect send-ssh-public-key \
     --instance-id "${INSTANCE_ID}" \
     --instance-os-user "${OS_USER}" \
     --availability-zone "${AZ}" \

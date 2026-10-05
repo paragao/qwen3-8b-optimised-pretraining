@@ -33,7 +33,19 @@
 set -euo pipefail
 
 REGION="${REGION:-us-east-1}"
-PROFILE="${AWS_PROFILE_NAME:-compute-sa-team-Administrator}"
+# No forced profile default. AWS_PROFILE_NAME (or AWS_PROFILE) is honoured if
+# the caller set one; otherwise nothing is passed and the standard credential
+# chain applies -- env vars, SSO, default profile, instance role. This used to
+# default to a specific team profile, so every aws call died with
+# ProfileNotFound for anyone cloning the repo. Exported rather than passed as
+# --profile so the ssh ProxyCommand child inherits it too.
+if [[ -n "${AWS_PROFILE_NAME:-}" ]]; then
+  export AWS_PROFILE="${AWS_PROFILE_NAME}"
+elif [[ -n "${AWS_PROFILE:-}" ]]; then
+  export AWS_PROFILE
+else
+  unset AWS_PROFILE
+fi
 OS_USER="${OS_USER:-ubuntu}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-nvcr.io/nvidia/nemo:26.04}"
 REMOTE_LOG_DIR="${REMOTE_LOG_DIR:-/home/ubuntu/qwen3-g5/run/logs}"
@@ -69,11 +81,11 @@ echo "Nodes: ${IDS[*]}  (region ${REGION})"
 say "Confirming the instances are running with SSM Online"
 declare -a AZS=()
 for id in "${IDS[@]}"; do
-  read -r st az ip < <(aws --profile "${PROFILE}" --region "${REGION}" \
+  read -r st az ip < <(aws --region "${REGION}" \
     ec2 describe-instances --instance-ids "${id}" \
     --query "Reservations[0].Instances[0].[State.Name,Placement.AvailabilityZone,PrivateIpAddress]" \
     --output text)
-  ping=$(aws --profile "${PROFILE}" --region "${REGION}" \
+  ping=$(aws --region "${REGION}" \
     ssm describe-instance-information \
     --filters "Key=InstanceIds,Values=${id}" \
     --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo None)
@@ -106,7 +118,7 @@ trap cleanup EXIT
 say "Generating a one-shot ed25519 key (never persisted on any instance)"
 ssh-keygen -t ed25519 -N "" -C "g5-retrieve-ephemeral" -f "${KEY}" >/dev/null
 
-PROXY="aws --profile ${PROFILE} --region ${REGION} ssm start-session \
+PROXY="aws --region ${REGION} ssm start-session \
 --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
 
 ssh_opts_for() {   # index -> prints the opts array for that node
@@ -138,7 +150,7 @@ set_opts() {       # index -> fills the global OPTS array
 
 push_key() {       # index -- the pushed key is valid for 60s
   local i="$1"
-  aws --profile "${PROFILE}" --region "${REGION}" \
+  aws --region "${REGION}" \
     ec2-instance-connect send-ssh-public-key \
     --instance-id "${IDS[$i]}" \
     --instance-os-user "${OS_USER}" \
