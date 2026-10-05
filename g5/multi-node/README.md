@@ -34,7 +34,10 @@ communication, so overlap cannot hide it. Full derivation in the main
 
 It ran the 4-layer `smoke` shape and peaked at **4.83 GiB — 21% of the card**.
 So it validates the fabric, the throughput and the stability, and says
-**nothing** about memory occupancy.
+**nothing** about memory occupancy. The scenario's own geometry was measured
+separately the next day — see below — and the two together are what cover both
+halves: `smoke` establishes that EFA works and what it costs against TCP, and
+18 × 2048 establishes what fits.
 
 To reproduce that run exactly rather than this scenario:
 
@@ -44,33 +47,98 @@ NUM_LAYERS=4 HIDDEN_SIZE=1024 FFN_HIDDEN_SIZE=3072 \
   GLOBAL_BATCH_SIZE=16 TRAIN_ITERS=1000 ./g5/finish-run-2node.sh
 ```
 
-## This scenario: the ~1B geometry at DP=2 — NOT YET MEASURED
+## This scenario: 18 layers x hidden 2048 at DP=2 — MEASURED
 
-`scenario.env` uses the same ~1B shape measured at 19.08 GiB on one node, with
-`GLOBAL_BATCH_SIZE=16` so each rank still processes 8 sequences.
+2026-10-05, 1000 iterations on real c4 over EFA, this exact geometry
+(`g5/results/run-2node-20261005-101859-rank*.log`):
 
-Per-rank memory should come out **lower** than 19.08 GiB, which is
-counter-intuitive enough to be worth stating: `g5/train.py` enables
-`use_distributed_optimizer` when `WORLD_SIZE > 1`, which **shards optimizer
-state across the data-parallel group**. At 1.009 B parameters the Adam moments
-plus fp32 master weights are ~12 B/param ≈ 11.3 GiB, so DP=2 removes ~5.6 GiB
-per rank. Activations are unchanged, because per-rank sequences are unchanged.
+| | |
+|---|---|
+| parameters | **1,490,550,784** |
+| peak allocated | **19.27 GiB** — 85.7% of 22.49 GiB |
+| peak reserved | 19.92 GiB (fragmentation 1.034) |
+| throughput | **5,753 tok/s** median, stdev 26 (0.45%) |
+| step time | 2.848 s at 16,384 tok/step |
+| stability | loss 11.3351 → 5.4236, 0 skipped, 0 NaN |
 
-Estimate: **~13.4 GiB per rank, ~9 GiB headroom.** That is arithmetic from two
-measurements (the 1B static state and its activation residual), not a reading.
-Treat it as a prediction this scenario is designed to test.
+`2048/18 = 113.8` and Qwen3-8B is `4096/36 = 113.8` — identical to three
+significant figures, so this is the best-proportioned proxy at this memory
+budget. Larger shapes exist (6 × 3072 reaches 1.58 B) and sit 4.5x off that
+ratio.
 
-### The next test, and its refutation threshold
+### The prediction was recorded first, and it held
 
-`SEQ_LENGTH=2048` at this geometry **OOMed on one node** (20.05 GiB allocated,
-38 MiB free). The sharding above says it should fit at DP=2 with room to spare —
-**15.09 GiB predicted, +4.66 GiB headroom**, which is a wide margin rather than
-a marginal call. If it OOMs anyway, the sharding estimate is wrong and should be
-re-measured rather than re-fitted.
+`max-model.py` predicted this geometry at **19.13 GiB** before it was run:
+
+| | |
+|---|---|
+| predicted | 19.13 GiB |
+| measured | 19.270 GiB |
+| error | **+0.140 GiB, +0.73%** |
+| headroom vs the 19.76 GiB ceiling | +0.49 GiB (predicted +0.62) |
+
+Worth stating plainly where that sits: +0.140 GiB is **1.8x the model's own
+worst error** over its four DP=1 calibration runs (0.0787 GiB). A confirmation,
+at the loose end — which is what an extrapolation to a new width (2048, never
+measured), a new depth and a new DP degree all at once should look like.
+
+Megatron reports memory in decimal **GB**, not GiB. The conversion was checked
+against the `1b` run rather than assumed: its raw `20.488 GB` gives
+`19.081 GiB`, matching the 19.08 on record.
+
+### And it settled the sharding question
+
+`max-model.py` shipped saying the 18 B/param split was "a reading, not a
+measurement" — specifically that whether the 4 B fp32 gradient buffer shards
+"depends on the reduce-scatter schedule", a ~1.9 GiB band of uncertainty.
+Megatron prints its own `weight and optimizer` accounting, which answers it:
+
+| reading | static at DP=2 | vs Megatron's 16.6599 GiB |
+|---|---|---|
+| **conservative, 12 B/param** | **16.6582 GiB** | **−0.01%** |
+| optimistic, 10 B/param | 13.8818 GiB | −16.68% |
+| unsharded, 18 B/param | 24.9873 GiB | +49.98% |
+
+It implies **12.0012 B/param**. The conservative reading is right to four
+significant figures and **the optimistic one is refuted**: the fp32 gradient
+buffer does not shard in this accounting. `--self-check` now asserts both
+halves, and mutation-testing confirms flipping the reading fails it by 2.9 GiB
+on peak.
+
+### The step is still entirely the transfer, at 4.1x the model size
+
+| | |
+|---|---|
+| parameters vs the 4-layer run | 4.147x |
+| bytes/step, scaled from the 1,033 MB measured there | 4,284 MB |
+| bytes/step, measured (1,510 MB/s × 2.848 s) | **4,299 MB** |
+| agreement | **+0.4%** |
+| implied transfer time | 2.837 s vs measured step **2.848 s** |
+
+Gradient volume scales *exactly* with parameter count, and compute is again
+wholly hidden inside the transfer. So the earlier finding was not an artefact of
+a tiny model.
+
+It also confirms the algebra behind the sizing search: communication scales with
+parameters while compute scales with parameters **×** tokens-per-rank, so at
+fixed tokens/rank the ratio is parameter-independent. **A bigger model does not
+improve the two-node economics** — it stays ~2x communication-bound. The lever
+is tokens per step per rank.
+
+### Still open: SEQ_LENGTH=2048
+
+`SEQ_LENGTH=2048` at the 20 × 1536 shape **OOMed on one node** (20.05 GiB
+allocated, 38 MiB free). At DP=2 the sharding leaves room for it. With the
+sharding term now measured rather than assumed, that prediction is worth more
+than it was:
 
 ```bash
 SEQ_LENGTH=2048 ./g5/finish-run-2node.sh      # after sourcing scenario.env
 ```
+
+At this 18 × 2048 geometry, seq 2048 is predicted to **OOM** — run
+`max-model.py --dp 2 --seq 2048` for the shapes that do fit there (16 × 2048 is
+the deepest, and at +0.16 GiB it is inside the unresolved band).
 
 ## How deep and how wide can two nodes go?
 
@@ -116,24 +184,32 @@ README).
 
 ### What these numbers are and are not
 
-Every DP>1 figure is a **prediction**. The activation model is measured — fitted
-over four single-node runs, worst error 0.0787 GiB — and the ceiling comes from
-one real OOM, but no 2-node memory reading exists at all. `--self-check`
-establishes the floor under that: it asserts the DP=1 path reproduces
-`predict.py` exactly on all five profiles and agrees with every observed
-outcome, **including the `1b2k` OOM**. If it could not reproduce the runs that
-calibrated it, its extrapolation would not be worth reading.
+Every DP>1 figure here other than the 18 × 2048 row is a **prediction**. One
+2-node memory reading now exists — this scenario's own, which came in at
++0.73% of the predicted value and pinned the sharding term to 12.0012 B/param —
+so the extrapolation has one anchor rather than none. That is one point, at one
+width and one DP degree: it does not validate the whole surface.
 
-Two caveats that change what you should do:
+`--self-check` establishes what is actually load-bearing. It asserts the DP=1
+path reproduces `predict.py` exactly on all five profiles and agrees with every
+observed outcome **including the `1b2k` OOM**, and it now also checks the DP=2
+prediction against the measurement and the sharding reading against Megatron's
+own accounting. Mutation-tested: flipping the sharding reading to optimistic
+fails it by 2.9 GiB on peak, and corrupting the recorded measurement by 1 GiB
+fails it too.
 
-- **The sharding split is a reading, not a measurement.** Of the 18 B/param,
-  12 B (fp32 master + Adam m + v) certainly shards; whether the 4 B fp32
-  gradient buffer also shards depends on the reduce-scatter schedule. The
-  script prints both — the gap is ~1.9 GiB at 1B parameters, so it is the width
-  of the uncertainty, not a rounding error. The tables use the conservative 12.
+One caveat that still changes what you should do:
+
 - **Treat anything inside ~0.5 GiB of the ceiling as unresolved.** The model's
-  own worst error is 0.08 GiB and the ceiling derives from a single OOM, so
-  `84 × 1024` at +0.09 GiB is not a fitting configuration — it is a coin flip.
+  own worst error is 0.08 GiB, its one DP=2 error is 0.14 GiB, and the ceiling
+  derives from a single OOM — so `84 × 1024` at +0.09 GiB is not a fitting
+  configuration, it is a coin flip. This scenario sits at +0.49 GiB measured,
+  just outside that band.
+
+The sharding caveat that used to sit here is **resolved**: it read "whether the
+4 B fp32 gradient buffer also shards depends on the reduce-scatter schedule",
+a ~1.9 GiB band. Megatron's own accounting settled it at 12.0012 B/param, so
+the conservative reading is correct and the optimistic one is refuted.
 
 ## Reproduce on EC2 directly
 

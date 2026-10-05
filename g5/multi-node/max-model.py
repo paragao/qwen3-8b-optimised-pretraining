@@ -85,6 +85,35 @@ SHARDED_OPTIMISTIC = SHARDED_CONSERVATIVE + B_GRAD          # 16
 QWEN3_RATIO = (predict.QWEN3_8B["hidden_size"]
                / predict.QWEN3_8B["num_layers"])
 
+# The first and only 2-node MEMORY measurement, 2026-10-05, 1000 iterations on
+# real c4 over EFA (g5/results/run-2node-20261005-101859-rank*.log).
+#
+# This exists so the DP>1 half of this script is anchored to a reading rather
+# than to arithmetic alone. Before it, --self-check could only prove the DP=1
+# path reproduced predict.py; the sharding term itself was untested.
+#
+# Megatron reports memory in DECIMAL GB, not GiB. Converted here once, with the
+# convention verified against the `1b` run: its raw 20.488 GB converts to
+# 19.081 GiB, matching the 19.08 GiB on record in g5/README.md.
+MEASURED_2NODE = dict(
+    arch=dict(num_layers=18, hidden_size=2048, seq_length=1024),
+    dp=2,
+    micro_batch=1,
+    params=1_490_550_784,
+    peak_allocated_gb=20.691,          # as logged, decimal GB
+    peak_reserved_gb=21.393,
+    # Megatron's OWN "Theoretical memory footprints: weight and optimizer"
+    # line, in MiB. This is what makes the sharding split a measurement: it
+    # implies 12.0012 B/param at DP=2, so the conservative reading is right and
+    # the optimistic one (10 B/param, i.e. the FP32 gradient buffer also
+    # sharding) is REFUTED by 16.7%.
+    megatron_weight_and_optimizer_mib=17059.73,
+    median_step_s=2.848,
+    tokens_per_s=5753,
+    skipped_iterations=0,
+    nan_iterations=0,
+)
+
 
 def bytes_per_param(dp: int, optimistic: bool = False) -> float:
     """Static bytes per parameter per rank at data-parallel degree `dp`."""
@@ -220,6 +249,54 @@ def self_check(param_count) -> int:
     bad += 0 if ok else 1
     print(f"  [{'PASS' if ok else 'FAIL'}] arch_for(20, 1536, 1024) == PROFILES['1b']"
           f"{'' if ok else f'  differs: {diffs}'}")
+
+    # ------------------------------------------------------------------------
+    # The DP>1 half, against the one 2-node measurement that exists. Without
+    # this the sharding term is arithmetic asserted against itself.
+    print("\n--- DP=2 against the MEASURED 2-node run (2026-10-05) ---")
+    M = MEASURED_2NODE
+    a = arch_for(M["arch"]["num_layers"], M["arch"]["hidden_size"],
+                 M["arch"]["seq_length"])
+
+    p_ok = abs(peak_bytes(param_count, a, M["dp"], M["micro_batch"])["params"]
+               - M["params"]) < 1
+    bad += 0 if p_ok else 1
+    print(f"  [{'PASS' if p_ok else 'FAIL'}] parameter count {M['params']:,}")
+
+    measured = M["peak_allocated_gb"] * 1e9
+    pred = peak_bytes(param_count, a, M["dp"], M["micro_batch"])["peak"]
+    err = (pred - measured) / GIB
+    # 0.25 GiB is ~3x the model's own worst DP=1 error (0.0787 GiB). Loose
+    # enough to allow a genuine extrapolation to a new width and a new DP
+    # degree; far too tight to survive a wrong sharding reading, which would
+    # be out by GiB (the 10 vs 12 B/param gap alone is 2.78 GiB here).
+    m_ok = abs(err) <= 0.25
+    bad += 0 if m_ok else 1
+    print(f"  [{'PASS' if m_ok else 'FAIL'}] peak allocated: predicted "
+          f"{pred / GIB:.3f} measured {measured / GIB:.3f} GiB "
+          f"(err {err:+.3f}, tol 0.25)")
+
+    # The sharding split, tested against Megatron's OWN accounting rather than
+    # against this script's assumption. This is the assertion that made the
+    # split a measurement instead of a reading.
+    meg = M["megatron_weight_and_optimizer_mib"] * (1024 ** 2)
+    implied = meg / M["params"]
+    cons, opt = bytes_per_param(M["dp"]), bytes_per_param(M["dp"], True)
+    s_ok = abs(implied - cons) < 0.05
+    bad += 0 if s_ok else 1
+    print(f"  [{'PASS' if s_ok else 'FAIL'}] Megatron implies {implied:.4f} B/param; "
+          f"conservative is {cons:.1f}")
+    # Non-vacuous half: the optimistic reading must be clearly WRONG, or the
+    # check above would pass for either and so test nothing.
+    r_ok = abs(implied - opt) > 1.0
+    bad += 0 if r_ok else 1
+    print(f"  [{'PASS' if r_ok else 'FAIL'}] and REFUTES the optimistic "
+          f"{opt:.1f} B/param (off by {abs(implied - opt):.2f})")
+
+    st_ok = M["skipped_iterations"] == 0 and M["nan_iterations"] == 0
+    bad += 0 if st_ok else 1
+    print(f"  [{'PASS' if st_ok else 'FAIL'}] run was clean: "
+          f"{M['skipped_iterations']} skipped, {M['nan_iterations']} NaN")
 
     print()
     print("SELF-CHECK " + ("PASSED" if not bad else f"FAILED ({bad})"))

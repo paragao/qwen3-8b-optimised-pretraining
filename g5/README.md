@@ -28,7 +28,7 @@ Kubernetes via `kubectl apply -k` — from a single source of truth.
 | | what | measured | EC2 | Kubernetes |
 |---|---|---|---|---|
 | [**`single-node/`**](single-node/README.md) | ~1B params on one A10G, maximum memory | **19.08 GiB (84.8%)**, 7,085 tok/s | `./g5/finish-run.sh` | `kubectl apply -k g5/single-node/` |
-| [**`multi-node/`**](multi-node/README.md) | 2 nodes, DP=2, over EFA | **25,056 tok/s** over EFA (3.10x TCP, 1.01x one node) | `./g5/finish-run-2node.sh` | `kubectl apply -k g5/multi-node/` |
+| [**`multi-node/`**](multi-node/README.md) | 2 nodes, DP=2, over EFA, 1.49B params | **19.27 GiB (85.7%)**, 5,753 tok/s | `./g5/finish-run-2node.sh` | `kubectl apply -k g5/multi-node/` |
 
 The Kubernetes side of each is a kustomize **overlay** on
 [`eks/`](eks/pretrain.yaml), not a copy, so the base stays the single definition
@@ -36,10 +36,12 @@ of the stack. `./g5/scenario-check.sh` asserts each scenario's two paths still
 describe the same run — two copies of a geometry drift silently, and both files
 stay valid while measuring different models.
 
-Read each folder's README for what is measured and what is predicted. The
-multi-node folder is explicit that its ~1B geometry is **not yet measured**: the
-25,056 tok/s above was recorded on the 4-layer `smoke` shape, which peaked at
-21% of the card, so it validates the fabric and not the memory occupancy.
+Both scenarios are now measured end to end. The multi-node one holds **1.49 B
+parameters against the single node's 1.01 B** — about +48%, because
+`use_distributed_optimizer` shards optimizer state across the data-parallel
+group. It buys that capacity at **parity throughput or worse**: the step time is
+the gradient transfer in every 2-node run measured so far. Read each folder's
+README for which figures are measured and which are still predicted.
 
 Both mock and real **c4** data are supported — see
 [Training on the c4 dataset](#training-on-the-c4-dataset). Use real data if you
@@ -1037,6 +1039,42 @@ ratio is unfavourable.
 **Practical conclusion: one `g5.8xlarge` for this model.** A second buys 1.3%
 for 2x the cost. If you do run two, EFA is not optional -- without it you lose
 3x rather than gaining anything.
+
+#### CONFIRMED at 4.1x the model size: the step IS the transfer
+
+A second 2-node run, 2026-10-05, at 18 layers x hidden 2048 -- **1,490,550,784
+parameters**, 4.147x the `smoke` shape -- 1000 iterations over EFA:
+
+| | |
+|---|---|
+| peak allocated | **19.27 GiB** (85.7% of the card) |
+| throughput | 5,753 tok/s median, stdev 26 (0.45%) |
+| step time | 2.848 s |
+| stability | loss 11.3351 -> 5.4236, 0 skipped, 0 NaN |
+
+The bandwidth accounting closes again, and tighter:
+
+| | |
+|---|---|
+| bytes/step, scaled from the 1,033 MB measured at `smoke` | 4,284 MB |
+| bytes/step, measured (1,510 MB/s x 2.848 s) | **4,299 MB** |
+| agreement | **+0.4%** |
+| implied transfer time | 2.837 s vs measured step **2.848 s** |
+
+So gradient volume scales **exactly** with parameter count, and compute is again
+wholly hidden inside the transfer. The earlier result was not an artefact of a
+tiny model.
+
+This also confirms the algebra that makes the two-node economics
+parameter-independent: communication scales with parameters, compute scales with
+parameters **x** tokens-per-rank, so at fixed tokens/rank the ratio is fixed. A
+bigger model does not help. **The lever is tokens per step per rank** -- which
+is exactly the ~1.4x prediction recorded above, still untested.
+
+What two nodes DO buy is capacity: 1.49 B parameters against 1.01 B on one
+node, about +48%, because the distributed optimizer shards optimizer state. See
+[`multi-node/README.md`](multi-node/README.md) and
+[`multi-node/max-model.py`](multi-node/max-model.py).
 
 **Prediction, stated before the run that would test it.** The lever is tokens
 per step per rank, which scales compute while the 1,033 MB transfer stays fixed.

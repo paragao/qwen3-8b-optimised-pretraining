@@ -63,14 +63,15 @@ patches:
         name: qwen3-config
         namespace: qwen3-pretrain
       data:
-        # ~1B parameters: 1,009,385,472. Measured at 19.08 GiB on ONE node;
-        # expected LOWER per rank here because the distributed optimizer
-        # shards ~11.3 GiB of optimizer state across DP=2. Not measured.
-        NUM_LAYERS: "20"
-        HIDDEN_SIZE: "1536"
-        FFN_HIDDEN_SIZE: "4608"
-        NUM_ATTENTION_HEADS: "12"
-        NUM_QUERY_GROUPS: "3"
+        # 1,490,550,784 parameters. MEASURED 2026-10-05 at DP=2: 19.27 GiB
+        # peak allocated (85.7% of the card), 5,753 tok/s, 0 skipped / 0 NaN
+        # over 1000 iterations. 2048/18 = 113.8 matches Qwen3-8B's 4096/36
+        # exactly, so this is the best-proportioned proxy at this budget.
+        NUM_LAYERS: "18"
+        HIDDEN_SIZE: "2048"
+        FFN_HIDDEN_SIZE: "6144"
+        NUM_ATTENTION_HEADS: "16"
+        NUM_QUERY_GROUPS: "4"
         SEQ_LENGTH: "1024"
         MICRO_BATCH_SIZE: "1"
         # 16 = 8 sequences per rank at DP=2, matching the single-node per-rank
