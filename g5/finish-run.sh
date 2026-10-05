@@ -33,9 +33,39 @@
 #
 set -euo pipefail
 
-INSTANCE_ID="${INSTANCE_ID:-i-09ee99ff5540c60ec}"
-REGION="${REGION:-us-east-1}"
-AZ="${AZ:-us-east-1b}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Read a KEY=VALUE out of the launcher's record WITHOUT sourcing it. Sourcing a
+# data file executes it, which is both unnecessary and fragile. Same parse as
+# terminate-instance.sh and finish-run-2node.sh.
+_record_get() {   # key file
+  sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -1 \
+    | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
+}
+
+# Target whatever launch-instance.sh last created, exactly as the 2-node driver,
+# retrieve-logs.sh and terminate-instance.sh already do. This used to carry a
+# hardcoded instance id and an us-east-1 default, so the documented flow --
+# launch, prepare, run -- pointed step 3 at an instance belonging to whoever
+# wrote the script, in the wrong region. An explicit INSTANCE_ID or REGION in
+# the environment still wins, so a deliberate override is unaffected.
+INSTANCE_ID="${INSTANCE_ID:-}"
+REGION="${REGION:-}"
+if [[ -z "${INSTANCE_ID}" && -f "${HERE}/.last-instance-id" ]]; then
+  INSTANCE_ID="$(_record_get INSTANCE_ID "${HERE}/.last-instance-id")"
+  _rec_region="$(_record_get REGION "${HERE}/.last-instance-id")"
+  [[ -z "${REGION}" && -n "${_rec_region}" ]] && REGION="${_rec_region}"
+  echo "Read ${HERE}/.last-instance-id: ${INSTANCE_ID:-<none>} in ${REGION:-<none>}"
+fi
+REGION="${REGION:-us-west-2}"
+if [[ -z "${INSTANCE_ID}" ]]; then
+  echo "FATAL: no instance id. Launch one first:" >&2
+  echo "         NODES=1 ./g5/launch-instance.sh" >&2
+  echo "       or name one explicitly:" >&2
+  echo "         INSTANCE_ID=i-0123456789 ./g5/finish-run.sh" >&2
+  exit 1
+fi
+AZ="${AZ:-}"
 # No forced profile default. AWS_PROFILE_NAME (or AWS_PROFILE) is honoured if
 # the caller set one; otherwise nothing is passed and the standard credential
 # chain applies -- env vars, SSO, default profile, instance role. This used to
@@ -78,13 +108,25 @@ fi
 echo "    g5/train.py has both the tensorboard_dir fix and throughput reporting."
 
 say "Confirming the instance is running and the SSM agent is online"
-state=$(aws --region "${REGION}" ec2 describe-instances \
+# State and AZ in ONE query, as finish-run-2node.sh does. The AZ is required by
+# ec2-instance-connect send-ssh-public-key below and the launcher does not
+# record it, so deriving it from the instance is the only way that stays correct
+# for an explicitly-passed INSTANCE_ID in any region.
+read -r state inst_az < <(aws --region "${REGION}" ec2 describe-instances \
   --instance-ids "${INSTANCE_ID}" \
-  --query "Reservations[0].Instances[0].State.Name" --output text)
+  --query "Reservations[0].Instances[0].[State.Name,Placement.AvailabilityZone]" \
+  --output text)
 if [[ "${state}" != "running" ]]; then
   echo "FATAL: instance ${INSTANCE_ID} is '${state}', not 'running'." >&2
   exit 1
 fi
+# An explicit AZ in the environment still wins, but it is no longer required.
+AZ="${AZ:-${inst_az}}"
+if [[ -z "${AZ}" || "${AZ}" == "None" ]]; then
+  echo "FATAL: could not determine the availability zone of ${INSTANCE_ID}." >&2
+  exit 1
+fi
+echo "    ${INSTANCE_ID} is running in ${AZ}."
 ping_status=$(aws --region "${REGION}" ssm describe-instance-information \
   --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
   --query "InstanceInformationList[0].PingStatus" --output text)
@@ -280,11 +322,13 @@ if [[ -n "${remote_log}" ]]; then
 fi
 
 say "Done"
-cat <<'NOTE'
+# Unquoted heredoc so ${INSTANCE_ID} expands -- the teardown hint must name the
+# instance this run actually used. The literal dollar in the price is escaped.
+cat <<NOTE
     The security group was NOT modified -- it still has zero ingress rules.
     The ephemeral SSH key expired after 60s and was never persisted on the
     instance; the local copy has been deleted.
 
-    THE INSTANCE IS STILL RUNNING AND BILLING (~$2.45/hr). Tear it down with:
-        ./g5/terminate-instance.sh i-09ee99ff5540c60ec
+    THE INSTANCE IS STILL RUNNING AND BILLING (~\$2.45/hr). Tear it down with:
+        ./g5/terminate-instance.sh ${INSTANCE_ID}
 NOTE

@@ -32,7 +32,10 @@
 #   REGION=us-west-2 ./g5/retrieve-logs.sh i-0aaa i-0bbb
 set -euo pipefail
 
-REGION="${REGION:-us-east-1}"
+# Match launch-instance.sh's default. The launcher's .last-instance-id
+# record overrides this when present; this value only applies when ids are
+# passed explicitly with no record, where us-east-1 was simply wrong.
+REGION="${REGION:-us-west-2}"
 # No forced profile default. AWS_PROFILE_NAME (or AWS_PROFILE) is honoured if
 # the caller set one; otherwise nothing is passed and the standard credential
 # chain applies -- env vars, SSO, default profile, instance role. This used to
