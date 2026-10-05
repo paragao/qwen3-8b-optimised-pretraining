@@ -63,13 +63,77 @@ Treat it as a prediction this scenario is designed to test.
 ### The next test, and its refutation threshold
 
 `SEQ_LENGTH=2048` at this geometry **OOMed on one node** (20.05 GiB allocated,
-38 MiB free). The sharding above says it should fit at DP=2 with room to spare.
-If it does not, the sharding estimate is wrong and should be re-measured rather
-than re-fitted.
+38 MiB free). The sharding above says it should fit at DP=2 with room to spare —
+**15.09 GiB predicted, +4.66 GiB headroom**, which is a wide margin rather than
+a marginal call. If it OOMs anyway, the sharding estimate is wrong and should be
+re-measured rather than re-fitted.
 
 ```bash
 SEQ_LENGTH=2048 ./g5/finish-run-2node.sh      # after sourcing scenario.env
 ```
+
+## How deep and how wide can two nodes go?
+
+```bash
+python3 g5/multi-node/max-model.py              # DP=2, seq 1024
+python3 g5/multi-node/max-model.py --self-check # prove DP=1 reproduces reality first
+python3 g5/multi-node/max-model.py --dp 1       # the single-node ceiling, for contrast
+```
+
+It imports `g5/predict.py` rather than restating any of it, so the parameter
+formula and the three measured activation constants cannot drift from the
+validated copy. It adds only the DP sharding term and searches.
+
+**Maxima at DP=2, seq 1024, micro-batch 1**, against the 19.76 GiB ceiling on
+peak allocated (derived from the `1b2k` OOM, not `nvidia-smi`'s 22.49):
+
+| hidden | max layers | params | h/L vs Qwen3-8B | predicted peak | headroom |
+|---|---|---|---|---|---|
+| 1024 | 84 | 1.32 B | 0.11x | 19.66 GiB | +0.09 — **too tight to trust** |
+| 1536 | 36 | 1.44 B | 0.38x | 19.50 GiB | +0.25 — tight |
+| **2048** | **18** | **1.49 B** | **1.00x** | **19.13 GiB** | **+0.62** |
+| 2560 | 10 | 1.53 B | 2.25x | 19.04 GiB | +0.71 |
+| 3072 | 6 | 1.58 B | 4.50x | 19.29 GiB | +0.47 |
+
+**18 layers × hidden 2048 is the pick.** Not because it is the largest — 6 × 3072
+reaches 1.58 B — but because its aspect ratio is `2048/18 = 113.8`, and
+Qwen3-8B's is `4096/36 = 113.8`. Identical to three significant figures, so it
+is the best-proportioned proxy available at this memory budget, and it carries
+the most headroom of the deep options.
+
+The single-node ceiling for contrast, same model, same script at `--dp 1`:
+
+| hidden | max layers (DP=1) | max layers (DP=2) | params DP=1 → DP=2 |
+|---|---|---|---|
+| 1024 | 55 | 84 | 0.97 B → 1.32 B |
+| 1536 | 21 | 36 | 1.04 B → 1.44 B |
+| 2048 | 9 | 18 | 1.06 B → 1.49 B |
+
+So the second node roughly **doubles the depth** at any width, and lifts the
+parameter ceiling from ~1.06 B to ~1.5 B — about **+50%**. It buys capacity, not
+speed: throughput at this geometry is parity with one node (see the main
+README).
+
+### What these numbers are and are not
+
+Every DP>1 figure is a **prediction**. The activation model is measured — fitted
+over four single-node runs, worst error 0.0787 GiB — and the ceiling comes from
+one real OOM, but no 2-node memory reading exists at all. `--self-check`
+establishes the floor under that: it asserts the DP=1 path reproduces
+`predict.py` exactly on all five profiles and agrees with every observed
+outcome, **including the `1b2k` OOM**. If it could not reproduce the runs that
+calibrated it, its extrapolation would not be worth reading.
+
+Two caveats that change what you should do:
+
+- **The sharding split is a reading, not a measurement.** Of the 18 B/param,
+  12 B (fp32 master + Adam m + v) certainly shards; whether the 4 B fp32
+  gradient buffer also shards depends on the reduce-scatter schedule. The
+  script prints both — the gap is ~1.9 GiB at 1B parameters, so it is the width
+  of the uncertainty, not a rounding error. The tables use the conservative 12.
+- **Treat anything inside ~0.5 GiB of the ceiling as unresolved.** The model's
+  own worst error is 0.08 GiB and the ceiling derives from a single OOM, so
+  `84 × 1024` at +0.09 GiB is not a fitting configuration — it is a coin flip.
 
 ## Reproduce on EC2 directly
 
