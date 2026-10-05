@@ -209,6 +209,31 @@ advertise `nvidia.com/gpu` and sail through the next check while running a model
 sized for a 24 GB A10G on the wrong hardware — the measured numbers in
 [Results](#results) will not reproduce and nothing will tell you why.
 
+**Both Jobs pin `nodeSelector: node.kubernetes.io/instance-type: g5.8xlarge`.**
+So on anything else the pods do not run on the wrong hardware — they do not run
+at all, with `0/N nodes are available: N node(s) didn't match Pod's node
+affinity/selector`, which never names the label. That pin is deliberate (it keeps
+the dataset build in the same AZ as the training pods). To run on a different
+type on purpose, override it on both Jobs — note HyperPod reports types with an
+`ml.` prefix:
+
+```yaml
+  - target:
+      kind: Job
+      name: c4-prep
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector/node.kubernetes.io~1instance-type
+        value: ml.g6e.48xlarge
+  - target:
+      kind: Job
+      name: qwen3-pretrain
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector/node.kubernetes.io~1instance-type
+        value: ml.g6e.48xlarge
+```
+
 For **scenario 2**, the `ZONE` column must show two `g5.8xlarge` nodes in **the
 same** zone. Cross-AZ puts every gradient all-reduce over an AZ boundary, and the
 all-reduce is already the limiting factor. A node group spread across three AZs
@@ -229,6 +254,29 @@ An empty `GPU` column means the training pod will never schedule. A *populated*
 one means only that the nodes have NVIDIA GPUs — it does not mean they are
 A10Gs. Step 1 is what checks that.
 
+**Node disk — the prerequisite that is easiest to miss and hardest to fix.** The
+training image needs roughly **100 GB free on the node's root volume**, and a
+node that fails this looks healthy by every other check here. Measured on
+`nvcr.io/nvidia/nemo:26.04`: 25.9 GB compressed across 120 layers, ~77 GB
+unpacked, and containerd needs **both at once** during the pull. A node with less
+free space does not fail fast — the pull runs for twenty minutes, crosses
+kubelet's eviction threshold, and the pod dies with `Init:ErrImagePull` plus
+`The node was low on resource: ephemeral-storage`.
+
+```bash
+# Free disk per node, which `kubectl get nodes` does not show
+for n in $(kubectl get nodes -o name | cut -d/ -f2); do
+  kubectl get --raw "/api/v1/nodes/$n/proxy/stats/summary" 2>/dev/null \
+  | python3 -c "import sys,json;f=json.load(sys.stdin)['node']['fs'];\
+print('  $n  %.1f GB free of %.1f GB' % (f['availableBytes']/1e9,f['capacityBytes']/1e9))"
+done
+```
+
+A 107 GB root volume — the SageMaker HyperPod default — is **not enough** unless
+the node is nearly empty. If you cannot get a bigger volume, pre-pull the image
+onto the node or host it in a registry closer to the cluster; neither the overlay
+nor any script here can work around it.
+
 **StorageClass.** The base PVC requests `ReadWriteMany` on a class named
 `efs-sc`. Check whether you have one *before* applying anything — a missing class
 is the single most likely reason nothing starts:
@@ -241,10 +289,16 @@ kubectl get storageclass efs-sc    # NotFound here means read the next paragraph
 RWX is required at 2 nodes, because both pods mmap the same `.bin`/`.idx` and an
 EBS volume cannot be mounted by two nodes — the second pod hangs `Pending`. If
 `efs-sc` does not exist, the PVC stays `Pending`, both pods stay `Pending`, and
-the `wait` in step 3 burns its full timeout before telling you anything. For
+the `wait` in step 4 burns its full timeout before telling you anything. For
 **scenario 1 only**, any `ReadWriteOnce` class from `kubectl get storageclass`
-will do; add this to `g5/single-node/kustomization.yaml` at the end, under the
-existing `patches:` key, substituting your own class name:
+will do — provided its `VOLUMEBINDINGMODE` is `WaitForFirstConsumer`. That
+matters: **both** Jobs mount this one PVC, and an RWO volume can only be mounted
+from one node, so they have to co-locate. `WaitForFirstConsumer` binds the volume
+to the first scheduled pod's node and the second pod inherits that affinity,
+which is what makes the patch safe. On an `Immediate` class the volume binds to
+an arbitrary zone first and the pods can be stranded. Add this to
+`g5/single-node/kustomization.yaml` at the end, under the existing `patches:`
+key, substituting your own class name:
 
 ```yaml
   - target:
@@ -323,9 +377,33 @@ kubectl -n qwen3-pretrain describe pod -l app=qwen3-pretrain | sed -n '/Events:/
 | what `describe` says | what it means |
 |---|---|
 | `pod has unbound immediate PersistentVolumeClaims` | the PVC never bound — check `kubectl -n qwen3-pretrain get pvc`; almost always a missing `efs-sc` StorageClass |
+| `didn't match Pod's node affinity/selector` | the hardcoded `nodeSelector` — your nodes are not `g5.8xlarge`; see Step 1 for the override |
+| `Init:ErrImagePull` + `node was low on resource: ephemeral-storage` | not enough node disk for the ~100 GB image; see the node-disk prerequisite |
 | `Insufficient nvidia.com/gpu` | no GPU capacity free, or the device plugin is not running |
 | `Insufficient vpc.amazonaws.com/efa` | scenario 2 on nodes without EFA — see its prerequisites |
 | `0/N nodes are available` + taint messages | the g5 nodes carry taints your pod does not tolerate |
+
+**Re-applying after ANY change needs the Jobs deleted first.** A Job's pod
+template is immutable, so `kubectl apply -k` can create one but never update it.
+Change the geometry, the StorageClass or the `nodeSelector` and re-apply, and you
+get thousands of characters of Go struct dump ending in the only words that
+matter — `spec.template: Invalid value: core.PodTemplateSpec{...}: field is
+immutable`. The fix:
+
+```bash
+kubectl -n qwen3-pretrain delete job c4-prep qwen3-pretrain
+kubectl apply -k g5/single-node/
+```
+
+**Read logs by label, not by Job.** `kubectl logs job/<name>` resolves to an
+arbitrary pod of that Job, so after any retry it is as likely to pick the dead
+pod as the live one — it says `Found 2 pods, using pod/...` and then
+`container "prep" in pod "..." is terminated`. Use the selector instead:
+
+```bash
+kubectl -n qwen3-pretrain logs -l app=qwen3-c4-prep -c prep --tail=20
+kubectl -n qwen3-pretrain logs -l app=qwen3-pretrain -c train --tail=20
+```
 
 **Do not use `--dry-run=server` as a pre-flight.** It looks like the careful
 thing to do and produces five alarming errors that are pure artefact — the

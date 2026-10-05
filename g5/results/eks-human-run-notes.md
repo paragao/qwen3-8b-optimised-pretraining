@@ -231,6 +231,145 @@ scenario-check and the EFA column had not already shown.
 
 ---
 
+# Second run-through: an ACTUAL EKS execution on p6-b200-cluster (ml.g6e.48xlarge)
+
+The first run-through never started a pod. This one does — on L40S rather than
+A10G, so it tests the manifest and the stack, not the g5 numbers. Predictions
+were recorded first in `eks-g6e-prediction.md`.
+
+## N12 — the manifest HARDCODES `nodeSelector: instance-type: g5.8xlarge`
+
+Not mentioned anywhere in the README section, and not in my own troubleshooting
+table. Applying on any other instance type gives:
+
+    Warning  FailedScheduling  0/6 nodes are available: 6 node(s) didn't match
+    Pod's node affinity/selector.
+
+It is set on **both** Jobs (`g5/eks/pretrain.yaml` lines ~229 and ~357). The
+comment there explains why it exists — pin the dataset build to the same AZ as
+the training pods — but a reader on g6e, g4dn, or a HyperPod cluster has no
+warning and the message does not name the label.
+
+Severity: HIGH. It is the first thing that stops a cluster that is otherwise
+correctly provisioned, and my "When nothing happens" table did not list this
+scheduler message.
+
+Workaround used here: a JSON-patch replacing the value on both Jobs with
+`ml.g6e.48xlarge`.
+
+## N13 — `kubectl apply -k` CANNOT update an existing Job
+
+After changing the overlay and re-applying, both Jobs failed with a wall of
+output ending in:
+
+    Job.batch "c4-prep" is invalid: spec.template: Invalid value:
+    core.PodTemplateSpec{...}: field is immutable
+
+A Job's pod template is immutable, so apply can create but never update one. The
+error is thousands of characters of Go struct dump with the useful phrase at the
+very end. The instructions present `kubectl apply -k` as the way to run the
+scenario and never say that changing anything requires deleting the Jobs first:
+
+    kubectl -n qwen3-pretrain delete job c4-prep qwen3-pretrain
+    kubectl apply -k g5/single-node/
+
+Severity: HIGH for anyone iterating, which is everyone who hits N4 or N12 first.
+
+## N14 — RWO with two Jobs works, but only by luck of co-scheduling
+
+Worth recording because my README advice could have failed. **Both** Jobs mount
+the same PVC, and a `ReadWriteOnce` volume can only be mounted from one node. It
+worked here:
+
+    c4-prep-rjgwp            hyperpod-i-0cb7b4c73ff8f1a54
+    qwen3-pretrain-0-5z7lp   hyperpod-i-0cb7b4c73ff8f1a54
+    qwen3-data               Bound   pvc-5ca7d656-...
+
+`WaitForFirstConsumer` binds the volume to the first scheduled pod's node and the
+second pod then inherits that node affinity, so they co-locate. That is the
+mechanism, not an accident — but it does mean the RWO patch is only safe while
+`volumeBindingMode: WaitForFirstConsumer`. On an `Immediate` class (like this
+cluster's `fsx-sc`) the volume binds to an arbitrary zone first and the pods can
+be stranded. The README should say which binding mode it assumes.
+
+Severity: MEDIUM — the advice is correct but under-specified.
+
+## N15 — THE RUN CANNOT COMPLETE HERE: node disk, and it is unstated
+
+The hard blocker, and the most valuable finding of the exercise, because nothing
+in the README hints at it.
+
+    Warning  Evicted  The node was low on resource: ephemeral-storage.
+                      Threshold quantity: 10729447174
+    Warning  Failed   Failed to pull image "nvcr.io/nvidia/nemo:26.04"
+    Init:ErrImagePull
+
+Measured, not assumed:
+
+| | |
+|---|---|
+| `nvcr.io/nvidia/nemo:26.04` compressed | **25.9 GB** across 120 layers (registry manifest) |
+| unpacked on disk | ~77 GB (the figure the repo already quotes) |
+| needed transiently during the pull | compressed **+** unpacked, so **~100 GB** |
+| g6e node root volume | **107.3 GB total** |
+| free on the four nodes | 56.6 / **6.1** / 55.1 / 57.8 GB |
+| kubelet eviction threshold | 10.7 GB free |
+
+The image does not fit on **any** node in this cluster, and would be marginal
+even on an empty 107 GB one. The pull ran 57.8 GB down to the eviction threshold
+and still had not finished.
+
+The README mentions "77 GB image pull" only inside a *timing* comment
+("30 min cold, 77 GB image pull"), which reads as patience required rather than
+as a disk requirement. Nothing in the prerequisites asks about node disk, and
+this cluster passes every other check in the section.
+
+Severity: HIGH. It is the one prerequisite that cannot be fixed by patching the
+overlay, and it is invisible until twenty minutes into a pull.
+
+## N16 — `kubectl logs job/...` can pick a DEAD pod
+
+When the prep Job retried after eviction there were two pods, and the documented
+command silently chose the terminated one:
+
+    $ kubectl -n qwen3-pretrain logs job/c4-prep -c prep
+    Found 2 pods, using pod/c4-prep-rjgwp
+    Error from server (BadRequest): container "prep" in pod "c4-prep-rjgwp" is terminated
+
+`job/<name>` resolves to an arbitrary pod of the Job, which after any retry is as
+likely to be the corpse as the live one. The label-selector form does not have
+this problem.
+
+Severity: MEDIUM.
+
+## Outcome of the second run-through
+
+**No training step executed.** The chain reached: scheduled on a real GPU node,
+PVC Bound, repo cloned by the init container, then died pulling the image.
+
+What it DID establish on a real cluster, none of which the first run-through
+could reach:
+
+- `kubectl apply -k` creates all six objects correctly;
+- the `clone` init container works — `alpine/git:2.45.2` pulled in 2.3 s and the
+  repo cloned at the pinned ref;
+- `WaitForFirstConsumer` plus the documented RWO patch binds the PVC and
+  co-schedules both Jobs onto one node (N14);
+- the `nodeSelector` is the first hard stop on non-g5 hardware (N12);
+- re-applying after any edit is impossible without deleting the Jobs (N13);
+- the image needs ~100 GB of node disk (N15).
+
+Predictions P1, P2 and P3 in `eks-g6e-prediction.md` are all **UNTESTED** and
+stay on record unresolved rather than being quietly dropped. No memory or
+throughput figure was produced, so nothing about them can be claimed either way.
+
+Cleanup: all objects deleted, the empty `qwen3-pretrain` namespace remains (the
+namespace delete is policy-blocked in my environment), node disk recovered to
+57.8 GB free, my own inference pods all still Running, and the local overlay
+patch reverted byte-identical by checksum.
+
+---
+
 # Resolution — what changed in the instructions
 
 Reviewed after the run, not during it. Each fix was then executed verbatim
@@ -249,6 +388,11 @@ against a live cluster before being committed.
 | N9 | teardown presented as one infallible command | LOW | finaliser delay noted; per-object fallback added |
 | N10 | `timeout` absent on macOS | INFO | no doc change — the instructions never use it, and that is now deliberate |
 | N11 | one-AZ requirement with no check | MED | the Step 1 `ZONE` column is the check; scenario 2 points at it when rank 1 does not appear |
+| N12 | `nodeSelector` hardcoded to `g5.8xlarge`, undocumented | HIGH | Step 1 states the pin, gives a working JSON-patch override for both Jobs (with the HyperPod `ml.` prefix noted), and the troubleshooting table now lists the `didn't match Pod's node affinity/selector` message |
+| N13 | `apply -k` cannot update an existing Job | HIGH | documented with the `field is immutable` text and the `delete job ... && apply` fix |
+| N14 | RWO patch depends on `WaitForFirstConsumer` | MED | the StorageClass paragraph now explains that both Jobs share the PVC, why WFFC makes co-location work, and that an `Immediate` class can strand the pods |
+| N15 | node disk requirement (~100 GB) unstated | HIGH | new prerequisite with the measured breakdown (25.9 GB compressed / ~77 GB unpacked / both at once), a per-node free-disk command `kubectl get nodes` cannot give, and the explicit statement that a 107 GB HyperPod root volume is not enough |
+| N16 | `logs job/...` can pick a dead pod | MED | documented with the `Found 2 pods, using ...` / `is terminated` output, and the label-selector form given for both Jobs |
 
 One finding needed no fix and one needed none *yet*: N6 because the apply was
 correct, N10 because the instructions already avoid the trap.
