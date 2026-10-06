@@ -327,6 +327,14 @@ this cluster passes every other check in the section.
 Severity: HIGH. It is the one prerequisite that cannot be fixed by patching the
 overlay, and it is invisible until twenty minutes into a pull.
 
+**CORRECTED BY N17.** The sentence "the image does not fit on any node" is true
+only of each node's **root volume**. Every g6e node also carries **6.51 TiB of
+unused local NVMe** mounted at `/opt/dlami/nvme` (N17). The blocker is therefore
+not that the node lacks disk — it has ~68x the needed space — but that
+containerd's data root (`/var/lib/containerd`) sits on the 100 GiB root volume
+and is *not* symlinked onto the instance store. Read N15 as "the image does not
+fit where containerd puts it", which is a different defect with different fixes.
+
 ## N16 — `kubectl logs job/...` can pick a DEAD pod
 
 When the prep Job retried after eviction there were two pods, and the documented
@@ -341,6 +349,114 @@ likely to be the corpse as the live one. The label-selector form does not have
 this problem.
 
 Severity: MEDIUM.
+
+## N17 — the node has 6.51 TiB of UNUSED local NVMe, at `/opt/dlami/nvme`
+
+Surveyed read-only after the run, by `cat /host/proc/mounts` and `df` inside the
+`hyp-obs-node-exporter` DaemonSet pod, which mounts host `/` at `/host/root` and
+host `/proc` at `/host/proc` read-only. No pod was created to learn this.
+Identical on all four `ml.g6e.48xlarge` nodes.
+
+### Every real filesystem on a g6e node
+
+| mountpoint | device | fstype | size | avail | note |
+|---|---|---|---|---|---|
+| `/` | `/dev/nvme0n1p1` | xfs | 99.9 GiB | 52-56 GiB | EBS root. **Holds `/var/lib/containerd`** |
+| **`/opt/dlami/nvme`** | `/dev/mapper/vg.01-lv_ephemeral` | ext4 | **6.86 TiB** | **6.51 TiB** | **instance store, 0% used** |
+| `/boot/efi` | `/dev/nvme0n1p128` | vfat | 10 MiB | 8.7 MiB | — |
+| `/tmp` | tmpfs | tmpfs | 746 GiB | 746 GiB | **RAM-backed**, not disk |
+| `/dev/shm` | tmpfs | tmpfs | 746 GiB | 746 GiB | RAM; pods see 64 GiB |
+| `/run` | tmpfs | tmpfs | 298.4 GiB | — | RAM |
+
+### There is no `/scratch` and no `/local_scratch`
+
+Checked explicitly on all four nodes. `/scratch`, `/local_scratch` and
+`/opt/sagemaker` are **absent**. `/mnt` exists but is an empty directory on the
+root volume, not a separate mount. The instance store is at `/opt/dlami/nvme`
+(a DLAMI convention), mode `drwxrwxrwt` — world-writable with the sticky bit,
+i.e. deliberately offered as scratch.
+
+### The 6.86 TiB is derived, not taken on trust
+
+`/proc/partitions` shows four instance-store devices (`nvme1n1`..`nvme4n1`) of
+1,855,468,750 KiB each, and `dm-0` at 7,421,870,080 KiB. The plain sum of the
+four is 7,421,875,000 KiB, which is **4,920 KiB larger** than `dm-0`. That gap
+is LVM physical-extent rounding and reproduces exactly:
+
+    floor(7,421,875,000 / 4096) = 1,811,981 extents
+    rounded down to a multiple of the 4 stripes = 1,811,980
+    1,811,980 x 4096 KiB = 7,421,870,080 KiB  == dm-0
+
+So the volume is striped across all four disks with no mirroring. ext4 then
+costs 0.80% in metadata (7,021.2 GiB usable) and reserves 5.04% for root — the
+ext4 default, so `available` (6,667.2 GiB = 6.51 TiB) is the real usable figure.
+EC2 `DescribeInstanceTypes` independently reports `4 x 1900 GB = 7600 GB` for
+`g6e.48xlarge`, which is 6.912 TiB and matches the raw sum.
+
+Worth noting: an earlier working assumption in this repo was "2 x 1900 GB". The
+authoritative API says **four** disks. The figure was wrong by 2x.
+
+### `kubelet` cannot see it, which is why eviction fired
+
+`kubectl get nodes` reports `ephemeral-storage` capacity `104779756Ki` — exactly
+the root volume. kubelet accounts only the root filesystem, so the 6.51 TiB is
+invisible to the scheduler and to the eviction threshold. A `hostPath` volume
+into `/opt/dlami/nvme` is likewise **not** charged against `ephemeral-storage`,
+which makes it usable for datasets and checkpoints without risking eviction.
+
+### `/fsx` IS available — as a pod mount via CSI, never on the host
+
+The user's expectation of a `/fsx` shared filesystem is correct in substance and
+wrong in mechanism:
+
+| | |
+|---|---|
+| on the host | **absent** — `/host/root/fsx` does not exist on any of the four nodes |
+| in pods | `10.1.3.177@tcp:/guohvb4v` **lustre**, `1.2T` total, `117G` used, **`1.1T` avail** (11%) |
+| mounted at | `/fsx` — by 11 of my own pods in namespace `paragao` |
+| delivered by | `fsx.csi.aws.com`, DaemonSet `kube-system/fsx-csi-node` on all 6 nodes |
+| filesystem | `fs-059196a3c86549910`, PERSISTENT_2, 250 MB/s/TiB |
+| PVC / PV | `paragao/fsx-pvc` -> `fsx-pv-paragao-b300`, **ReadWriteMany** |
+
+`/fsx` is therefore the established convention in this cluster, satisfied by a
+PVC rather than a node mount. Three other PVs bind the same filesystem, and a
+`fsx-sc` StorageClass exists for dynamic provisioning (`Immediate` binding,
+pinned to `subnetId subnet-07e874a503c29cdac`).
+
+**It is cross-AZ.** The FSx filesystem lives in `subnet-07e874a503c29cdac`
+(`10.1.3.0/24`, **us-west-2d**) while all four g6e nodes are in
+`subnet-0ed7e888888f05b12` (`10.1.2.0/24`, **us-west-2b**). Same VPC so it
+mounts and works, but every read and write crosses an AZ boundary — latency plus
+cross-AZ data charges. For a Megatron indexed dataset read every step this is
+the wrong tier; `/opt/dlami/nvme` is local and 5.4x larger.
+
+Also installed cluster-wide: `efs.csi.aws.com`, `s3.csi.aws.com` (an `s3-pv` is
+bound), `ebs.csi.aws.com` with `gp2` and `sagemaker-spaces-default-storage-class`.
+
+### HyperPod exposes the two knobs that would fix N15 properly
+
+`aws sagemaker describe-cluster --cluster-name p6-b200-eks-cluster` shows the
+`g6e` instance group with `"InstanceStorageConfigs": []` — nothing configured,
+hence the default 100 GiB root. The API (`update-cluster`) accepts:
+
+- `EbsVolumeConfig{VolumeSizeInGB, RootVolume}` — and `RootVolume: true` applies
+  the size **to the root volume**, which is what containerd needs. Other
+  clusters in this same account already use this: `eks-runai-hyperpod-v2` sets
+  500 GB on its `g6` group and 1000 GB on `p5e`, `palashmr-b300-efa-tf` sets
+  500 GB on `worker-b300` — all with `RootVolume: false`, i.e. as a *secondary*
+  volume.
+- `FsxLustreConfig{DnsName, MountName, MountPath}` — "the local path where the
+  Amazon FSx for Lustre file system is mounted on instances". This is the
+  supported way to get a genuine **host** `/fsx`, and it is simply not
+  configured on this cluster's g6e group.
+
+Both change the instance group and so imply node replacement. Neither was
+attempted: these are shared nodes running live inference.
+
+Severity: HIGH as documentation (no prerequisite mentions node disk layout, and
+the one abundant filesystem is the one nothing points at), INFO as a blocker —
+it does not by itself unblock the image pull, because containerd's data root is
+still on the 100 GiB volume.
 
 ## Outcome of the second run-through
 
@@ -393,6 +509,7 @@ against a live cluster before being committed.
 | N14 | RWO patch depends on `WaitForFirstConsumer` | MED | the StorageClass paragraph now explains that both Jobs share the PVC, why WFFC makes co-location work, and that an `Immediate` class can strand the pods |
 | N15 | node disk requirement (~100 GB) unstated | HIGH | new prerequisite with the measured breakdown (25.9 GB compressed / ~77 GB unpacked / both at once), a per-node free-disk command `kubectl get nodes` cannot give, and the explicit statement that a 107 GB HyperPod root volume is not enough |
 | N16 | `logs job/...` can pick a dead pod | MED | documented with the `Found 2 pods, using ...` / `is terminated` output, and the label-selector form given for both Jobs |
+| N17 | 6.51 TiB of local NVMe unmentioned; `/fsx` mechanism unstated; N15's remedy incomplete | HIGH | the node-disk prerequisite now states that a large instance store does **not** help containerd and why, names the real fix (`EbsVolumeConfig{VolumeSizeInGB, RootVolume: true}`, with `RootVolume: false` called out as the wrong one), and a new paragraph documents `/opt/dlami/nvme` (6.86 TiB, not `/scratch` or `/local_scratch`, uncounted by `ephemeral-storage`), `/tmp` as RAM-backed `tmpfs`, and `/fsx` as a CSI **pod** mount rather than a host mount — with a command that maps every FSx filesystem to its AZ so a cross-AZ mount is visible before `DATA_PATH` is set |
 
 One finding needed no fix and one needed none *yet*: N6 because the apply was
 correct, N10 because the instructions already avoid the trap.

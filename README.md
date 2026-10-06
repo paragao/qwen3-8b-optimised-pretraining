@@ -273,9 +273,62 @@ done
 ```
 
 A 107 GB root volume — the SageMaker HyperPod default — is **not enough** unless
-the node is nearly empty. If you cannot get a bigger volume, pre-pull the image
-onto the node or host it in a registry closer to the cluster; neither the overlay
-nor any script here can work around it.
+the node is nearly empty.
+
+Two things to know before you try to work around it. First, **a large instance
+store does not help here.** A `g6e.48xlarge` carries 6.5 TiB of free local NVMe
+(see the next paragraph) and the pull still fails, because containerd's data root
+is `/var/lib/containerd` on the *root* volume and is not symlinked onto the
+instance store. Check the volume containerd actually uses, not the node's total
+disk. Second, on HyperPod the root volume **is** resizable — the instance group
+takes `InstanceStorageConfigs` with
+`EbsVolumeConfig{VolumeSizeInGB: 500, RootVolume: true}`, and `RootVolume: true`
+is the part that matters (`false` attaches a *secondary* volume, which containerd
+will not use either). That replaces the nodes, so it is a cluster-admin change,
+not something a job can do. Failing both, pre-pull the image onto the node or
+host it in a registry closer to the cluster.
+
+**Node-local scratch, and `/fsx`.** Worth knowing before you point `DATA_PATH` at
+a network volume. On `g6e.48xlarge` the four 1.9 TB instance-store NVMe disks are
+LVM-striped into one ext4 filesystem mounted at **`/opt/dlami/nvme`** — 6.86 TiB,
+6.51 TiB free, mode `drwxrwxrwt`. It is **not** at `/scratch` or
+`/local_scratch`; those do not exist. kubelet does not count it in
+`ephemeral-storage`, so a `hostPath` volume into it is both large and immune to
+the eviction threshold that kills the image pull. `/tmp` looks even bigger at
+746 GiB but is `tmpfs`, so it spends RAM, not disk.
+
+`/fsx` is a **pod** mount, not a host mount — nothing is mounted at `/fsx` on the
+node. It arrives through the FSx CSI driver (`fsx.csi.aws.com`) as a
+`ReadWriteMany` PVC, and on this cluster it is 1.2 TiB of Lustre with ~1.1 TiB
+free. Check what you have, and where it lives, because a cross-AZ FSx mount is
+read every training step:
+
+```bash
+# instance-store scratch and the real root-volume figure, per node
+for n in $(kubectl get nodes -o name | cut -d/ -f2); do
+  echo "== $n"
+  kubectl get node "$n" -o jsonpath='   ephemeral-storage (root vol only): {.status.capacity.ephemeral-storage}{"\n"}'
+done
+
+# FSx: does a PVC exist, and is the filesystem in the same AZ as the nodes?
+kubectl get pvc -A
+kubectl get nodes -o custom-columns='NODE:.metadata.name,ZONE:.metadata.labels.topology\.kubernetes\.io/zone'
+
+# Every FSx filesystem in the region, with the AZ of its subnet so you can
+# compare against the node zones above. Cross-AZ mounts work but cost latency.
+aws fsx describe-file-systems --region "$REGION" \
+  --query 'FileSystems[].[FileSystemId,StorageCapacity,SubnetIds[0]]' --output text \
+| while read -r fsid gib subnet; do
+    az=$(aws ec2 describe-subnets --subnet-ids "$subnet" --region "$REGION" \
+         --query 'Subnets[0].AvailabilityZone' --output text 2>/dev/null)
+    printf '  %-24s %7s GiB  %-26s %s\n' "$fsid" "$gib" "$subnet" "$az"
+  done
+```
+
+HyperPod can also mount FSx on the host: the same `InstanceStorageConfigs` takes
+`FsxLustreConfig{DnsName, MountName, MountPath}`, where `MountPath` is "the local
+path where the Amazon FSx for Lustre file system is mounted on instances" — so a
+real host `/fsx` is a cluster-config change, not something these manifests do.
 
 **StorageClass.** The base PVC requests `ReadWriteMany` on a class named
 `efs-sc`. Check whether you have one *before* applying anything — a missing class
