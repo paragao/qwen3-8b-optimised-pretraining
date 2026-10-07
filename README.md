@@ -368,6 +368,84 @@ key, substituting your own class name:
         storageClassName: gp3
 ```
 
+**Or skip the StorageClass entirely and use the node's own NVMe.** Two optional
+kustomize components put the job's bytes on the instance store described above.
+Add **one** of them — `local-nvme-data` already includes `local-nvme` — as a
+`components:` key in the scenario overlay you are applying:
+
+```yaml
+# at the end of g5/single-node/kustomization.yaml (or g5/multi-node/)
+components:
+  - ../eks/local-nvme
+```
+
+| | `../eks/local-nvme` | `../eks/local-nvme-data` |
+|---|---|---|
+| moves logs/TensorBoard (`/workspace/run`) | yes | yes |
+| moves the HuggingFace cache (`HF_HOME`) | yes | yes |
+| moves the **c4 dataset** | no | yes |
+| needs a StorageClass | yes, RWX at 2 nodes | **no — the PVC is removed** |
+| node count | 1 or 2 | **1 only** |
+
+Use `local-nvme` for the scaling benefit: both things it moves are per-node
+scratch no other rank reads, so it is correct at either node count. The
+`/workspace/run` emptyDir it replaces lives on the **root** volume and counts
+against the same `ephemeral-storage` eviction budget the 100 GB image pull is
+already straining, so a checkpoint written there can evict the pod that wrote
+it. The HF cache is the largest transient write in the run — roughly 3x the
+dataset — and on a cross-AZ EFS or FSx mount every byte of it crossed an AZ
+boundary.
+
+Use `local-nvme-data` when you have **no RWX StorageClass at all**. It deletes
+the PVC, so there is nothing left to stay `Pending`. It is **single-node only**,
+and not as a matter of taste: a hostPath is node-local, `c4-prep` runs once on
+one node, and at DP=2 both ranks must mmap the same `.bin`/`.idx`. The failure is
+at least loud — the base manifest's preflight initContainer checks for
+`${DATA_PATH}.bin` before torchrun starts, so rank 1 stops with
+`FATAL: /data/c4_qwen3.bin missing` rather than silently training on the mock
+dataset. If you see that on exactly one of two pods, this is why.
+
+Three things to check before applying either, in rough order of how likely they
+are to bite:
+
+```bash
+# 1. The path must exist on every node the pod could land on. hostPath is NOT
+#    schedulable-aware: the scheduler places the pod and the mount fails
+#    afterwards, so a node without it gives you
+#      hostPath type check failed: /opt/dlami/nvme is not a directory
+#    This cluster has g6e nodes that HAVE it and c6i nodes that do not.
+kubectl get nodes -o custom-columns='NODE:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type'
+
+# 2. Pod Security Admission must allow hostPath. It is forbidden by BOTH the
+#    `baseline` and `restricted` Pod Security Standards. Empty output means no
+#    enforcement and hostPath is allowed; `restricted` means the Job is
+#    rejected at admission with `violates PodSecurity`.
+kubectl get ns -o custom-columns='NS:.metadata.name,ENFORCE:.metadata.labels.pod-security\.kubernetes\.io/enforce'
+
+# 3. The build is what the cluster sees, so assert the build. 92 assertions,
+#    including that the dataset stays read-only in the training pod.
+python3 g5/eks/validate-nvme.py
+kubectl apply -k g5/single-node/ --dry-run=server   # proves admission accepts it
+```
+
+Both components deliberately use `type: Directory` rather than
+`DirectoryOrCreate`, and `validate-nvme.py` fails if that is ever weakened. The
+reason is the quiet failure: on a node with no instance store mounted there,
+`DirectoryOrCreate` makes an empty directory on the **root** volume instead and
+the pod starts normally, filling the disk containerd needs while appearing to
+use 6.5 TiB of NVMe. With `type: Directory` the kubelet refuses to start the pod
+and names the path. An absent disk must not render as a working one.
+
+Two consequences of a hostPath worth knowing up front. **It does not fix the
+image pull** — containerd's data root is on the root volume, so a 100 GB image
+still fails on a 107 GB root volume no matter how much NVMe the node has; a
+hostPath moves the *job's* bytes, not the *image's*. And **nothing is reclaimed
+when you delete the namespace**: the data stays at
+`/opt/dlami/nvme/qwen3-pretrain/` on whichever node ran the pod, which is why a
+re-run on the same node reuses the dataset instead of re-downloading it, and
+also how you leak disk no Kubernetes object accounts for. Delete that one
+directory on the node to reclaim.
+
 ### Scenario 1 — single node, ~1B parameters, 85% of one A10G
 
 ```bash
@@ -569,6 +647,16 @@ running while measuring different models.
 `python3 g5/eks/validate.py` additionally checks the base manifest's own
 invariants — the four node-count values, the Service cross-references, and that
 the rendezvous stays headless with no NodePort, LoadBalancer or `hostNetwork`.
+
+`python3 g5/eks/validate-nvme.py` covers the two optional `local-nvme`
+components, which `validate.py` cannot: it reads the base manifest directly, and
+`local-nvme-data` removes the PVC its checks assume. The nvme validator instead
+*builds* each overlay-plus-component pair and asserts the result — 92
+assertions, including that the dataset stays read-only in the training pod and
+that `type: Directory` is never weakened to `DirectoryOrCreate`. It also carries
+one deliberate negative case: pairing `local-nvme-data` with `multi-node` is the
+unsupported combination, so the suite asserts that it is *detectable* and counts
+the detection as a pass.
 
 > **Do not change the rendezvous Service to `type: NodePort` or
 > `type: LoadBalancer` to make debugging easier.** It is headless

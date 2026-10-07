@@ -1,0 +1,143 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# ============================================================================
+# COMPONENT: dataset on the instance-store NVMe, no PVC and no StorageClass
+# ============================================================================
+#
+#   # g5/single-node/kustomization.yaml
+#   components:
+#     - ../eks/local-nvme-data
+#
+# Includes ../local-nvme (so you add ONE of the two, never both) and goes
+# further: it moves the c4 dataset itself onto /opt/dlami/nvme and removes the
+# PersistentVolumeClaim entirely.
+#
+# WHAT THIS IS FOR: a cluster with no RWX StorageClass. A missing `efs-sc` is
+# the single most common reason nothing starts -- the PVC stays Pending, both
+# pods stay Pending, and the 30-minute `wait` burns its whole timeout before
+# saying anything. With this component there is no PVC to bind, so no
+# StorageClass is needed at all. The 6.5 TiB of instance store is also about
+# 32,000x the 200 MB the default 50M-token dataset actually needs.
+#
+# ---------------------------------------------------------------------------
+# SINGLE NODE ONLY. THIS IS NOT A PREFERENCE.
+# ---------------------------------------------------------------------------
+# A hostPath is node-local, and at DP=2 the two ranks mmap THE SAME .bin/.idx
+# and read different slices of it. The c4-prep Job runs once, on one node, so
+# only that node gets a dataset.
+#
+# The failure is loud, not silent, and that is by design: the training pod on
+# the node without a dataset hits the base manifest's preflight initContainer,
+# which checks for ${DATA_PATH}.bin before torchrun starts and exits with
+#   FATAL: /data/c4_qwen3.bin missing. Run the c4-prep Job first:
+# So a 2-node attempt stops at a readable error rather than training rank 1 on
+# the MOCK dataset, whose loss curve is meaningless but looks plausible. If you
+# see that FATAL on exactly one of two pods, this is why.
+#
+# For two nodes use ../local-nvme instead -- it moves the scratch, keeps the
+# RWX PVC for the dataset, and is correct at any node count. The direct-EC2
+# 2-node path does solve this with node-local data, by building the dataset on
+# BOTH nodes and comparing md5 across them (g5/finish-run-2node.sh); that is a
+# real option here too, but it needs the prep Job turned into a per-node
+# Indexed Job and is deliberately not attempted by this component.
+#
+# ---------------------------------------------------------------------------
+# WHY THE VOLUME ENTRY IS DELETED AND NOT JUST UNMOUNTED
+# ---------------------------------------------------------------------------
+# The kubelet and the scheduler's VolumeBinding plugin resolve EVERY entry in
+# spec.volumes, whether or not a container mounts it. Leaving the `data` volume
+# in place while deleting the PVC would fail scheduling with
+#   persistentvolumeclaim "qwen3-data" not found
+# and leaving the PVC in place would reintroduce the exact Pending-forever
+# failure this component exists to remove. So all three go together: the
+# mounts, the volume entries, and the PVC.
+#
+# ---------------------------------------------------------------------------
+# THE DATA SURVIVES THE JOB, AND THAT CUTS BOTH WAYS
+# ---------------------------------------------------------------------------
+# `kubectl delete namespace qwen3-pretrain` reclaims nothing on the host. The
+# dataset stays at /opt/dlami/nvme/qwen3-pretrain/data on whichever node built
+# it, which is useful -- prepare_c4.py verifies and reuses an existing build,
+# so a re-run on the same node skips the download entirely. It is also how you
+# leak 200 MB per node that no Kubernetes object accounts for. To reclaim:
+#   /opt/dlami/nvme/qwen3-pretrain   <- delete this directory on the node
+#
+# One more consequence worth knowing: because the dataset is node-local and
+# `nodeSelector` alone does not pin a pod to a SPECIFIC node, a re-applied
+# training Job can land on a different node of the same type and find no
+# dataset. That surfaces as the same preflight FATAL above. Re-run c4-prep, or
+# pin both Jobs to one node name if you re-run often.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+components:
+  - ../local-nvme
+
+patches:
+  # ------------------------------------------- the PVC itself, and its volume
+  - target:
+      kind: PersistentVolumeClaim
+      name: qwen3-data
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: qwen3-data
+        namespace: qwen3-pretrain
+
+  # ------------------------------------------------------------ training Job
+  # The train container and the preflight initContainer both keep
+  # readOnly: true from the base -- a merge by mountPath replaces only the
+  # keys named here. Only c4-prep writes the dataset.
+  - target:
+      kind: Job
+      name: qwen3-pretrain
+    patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: qwen3-pretrain
+        namespace: qwen3-pretrain
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: data
+                $patch: delete
+            initContainers:
+              - name: preflight
+                volumeMounts:
+                  - name: nvme
+                    mountPath: /data
+                    subPath: qwen3-pretrain/data
+            containers:
+              - name: train
+                volumeMounts:
+                  - name: nvme
+                    mountPath: /data
+                    subPath: qwen3-pretrain/data
+
+  # ---------------------------------------------------------------- prep Job
+  - target:
+      kind: Job
+      name: c4-prep
+    patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: c4-prep
+        namespace: qwen3-pretrain
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: data
+                $patch: delete
+            containers:
+              - name: prep
+                volumeMounts:
+                  - name: nvme
+                    mountPath: /data
+                    subPath: qwen3-pretrain/data

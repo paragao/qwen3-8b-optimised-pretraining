@@ -1249,3 +1249,35 @@ changes nothing.
   measured at **3.1x TCP**, so a 2-node run that silently falls back to TCP is
   not "somewhat" below the scaling tables above — it is 3x below. The training
   container detects a missing device and says so rather than hiding it.
+- **Node-local scratch is opt-in, via two kustomize components.** Add one of
+  them as a `components:` key in the scenario overlay:
+  `../eks/local-nvme` moves `/workspace/run` and the HuggingFace cache onto the
+  instance-store NVMe at `/opt/dlami/nvme` and is correct at 1 or 2 nodes,
+  because both are per-node scratch no other rank reads. `../eks/local-nvme-data`
+  includes it and also moves the dataset, which **deletes the PVC** — so it
+  needs no StorageClass at all, and is single-node only, because a hostPath is
+  node-local and at DP=2 both ranks mmap the same `.bin`/`.idx`. Add one, never
+  both. The win is not just capacity: the `emptyDir` it replaces lives on the
+  node's **root** volume and counts against the same `ephemeral-storage`
+  eviction budget the ~100 GB image pull already strains, so a checkpoint
+  written there can evict the pod that wrote it.
+- Both components use `type: Directory`, **not** `DirectoryOrCreate`, and
+  `python3 g5/eks/validate-nvme.py` fails if that is weakened. On a node with no
+  instance store mounted at that path, `DirectoryOrCreate` silently creates a
+  directory on the root volume and the pod runs normally while filling the disk
+  containerd needs. Measured on `p6-b200-cluster` (2026-10-07): the path is
+  present on `ml.g6e.48xlarge` and **absent** on `ml.c6i.8xlarge` in the same
+  cluster, so this is a live hazard rather than a hypothetical one. hostPath is
+  also not schedulable-aware — the scheduler places the pod and the mount fails
+  afterwards — and it is forbidden by the `baseline` and `restricted` Pod
+  Security Standards, so check
+  `kubectl get ns -o custom-columns='NS:.metadata.name,ENFORCE:.metadata.labels.pod-security\.kubernetes\.io/enforce'`
+  before applying.
+- A hostPath does **not** fix the image pull. containerd's data root is
+  `/var/lib/containerd` on the root volume and is not symlinked onto the
+  instance store, so a ~100 GB image still fails on a 107 GB root volume no
+  matter how much NVMe the node has. It moves the job's bytes, not the image's.
+  Nothing on the host is reclaimed by `kubectl delete namespace` either: the
+  data stays at `/opt/dlami/nvme/qwen3-pretrain/`, which is why a re-run on the
+  same node reuses the dataset, and also how you leak disk no Kubernetes object
+  accounts for.

@@ -1,0 +1,165 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# ============================================================================
+# COMPONENT: put node-local scratch on the instance-store NVMe
+# ============================================================================
+#
+# Opt in from either scenario overlay by adding ONE key:
+#
+#   # g5/single-node/kustomization.yaml  or  g5/multi-node/kustomization.yaml
+#   components:
+#     - ../eks/local-nvme
+#
+# Safe at 1 node AND at 2 nodes: everything it moves is per-node scratch that
+# no other rank reads. The DATASET is deliberately NOT moved here, because a
+# node-local dataset is wrong at DP=2 -- see ../local-nvme-data, which is the
+# single-node-only component that moves it too.
+#
+# ---------------------------------------------------------------------------
+# WHAT IT MOVES, AND WHY
+# ---------------------------------------------------------------------------
+#   /workspace/run  logs, TensorBoard, checkpoints. Was an emptyDir, which
+#                   lives on the node's ROOT volume and counts against
+#                   kubelet's ephemeral-storage eviction threshold -- the same
+#                   budget the 100 GB image pull is already straining. A
+#                   checkpoint written there can evict the pod that wrote it.
+#   HF_HOME         the HuggingFace streaming/Arrow cache built by
+#                   g5/prepare_c4.py. Was /data/hf on the shared PVC, so on a
+#                   cross-AZ EFS or FSx mount every cache write crossed an AZ
+#                   boundary. Local NVMe is the right medium for a cache.
+#
+# ---------------------------------------------------------------------------
+# WHY type: Directory AND NOT DirectoryOrCreate
+# ---------------------------------------------------------------------------
+# This is the whole safety argument for the file, so do not "fix" it.
+#
+# /opt/dlami/nvme is where the DLAMI-based SageMaker HyperPod AMI mounts the
+# LVM-striped instance store. It is NOT a Kubernetes-managed path and it does
+# NOT exist on a stock EKS AL2023 node, where the instance-store disks are
+# left raw and unmounted.
+#
+# With DirectoryOrCreate, a node that has no instance store mounted there gets
+# an empty directory created ON THE ROOT VOLUME instead, and the pod starts and
+# runs -- writing checkpoints and caches into the ~50 GB of free root disk that
+# containerd needs, until kubelet evicts it. The run would look like it was
+# using 6.5 TiB of NVMe while actually filling the disk that keeps the node
+# alive, and nothing in the pod's own output would say so.
+#
+# With type: Directory the kubelet refuses to start the pod and says exactly
+# what is wrong:
+#   MountVolume.SetUp failed for volume "nvme" : hostPath type check failed:
+#   /opt/dlami/nvme is not a directory
+# An absent disk must not render as a working one.
+#
+# ---------------------------------------------------------------------------
+# CHECK BEFORE YOU APPLY IT
+# ---------------------------------------------------------------------------
+#   1. The path exists on every node that can run the pod. hostPath is not
+#      schedulable-aware: the scheduler will happily place the pod on a node
+#      without it, and the failure arrives at mount time, not at scheduling.
+#        kubectl get nodes -o name | cut -d/ -f2 | while read -r n; do
+#          echo "== $n"; kubectl debug "node/$n" -it --image=busybox:1.36 \
+#            -- df -h /host/opt/dlami/nvme 2>/dev/null | tail -1
+#        done
+#      Cheaper, if a node-exporter DaemonSet is already running, is to read
+#      node_filesystem_size_bytes rather than start a debug pod.
+#
+#   2. Pod Security Admission allows hostPath in this namespace. hostPath is
+#      forbidden by both the `baseline` and `restricted` Pod Security
+#      Standards. A cluster that enforces either rejects the Job at admission:
+#        Error ... violates PodSecurity "restricted:latest": hostPath volumes
+#      Check the namespace and the cluster default:
+#        kubectl get ns qwen3-pretrain -o jsonpath='{.metadata.labels}'
+#
+#   3. The containers run as root. The kubelet creates the subPath directories
+#      below as root:root 0755, so a pod with a non-root runAsUser cannot
+#      write into them. The NeMo image runs as root and this manifest sets no
+#      securityContext, so that holds as shipped -- but if you add one, add an
+#      fsGroup or pre-create the directories on the host.
+#
+# ---------------------------------------------------------------------------
+# WHAT IT DOES NOT FIX
+# ---------------------------------------------------------------------------
+# NOT the image pull. containerd's data root is /var/lib/containerd on the
+# ROOT volume and is not symlinked onto the instance store, so a 100 GB image
+# still fails on a 107 GB root volume no matter how much NVMe the node has. A
+# hostPath moves the JOB's bytes; it cannot move the IMAGE's. Raising the root
+# volume (EbsVolumeConfig with RootVolume: true) is the fix for that one.
+#
+# Every mount below uses a subPath, so the pods get their own subtree of the
+# shared instance store rather than its root. Inspect it from the host at
+# /opt/dlami/nvme/qwen3-pretrain/ and delete that one directory to reclaim.
+# Nothing here is cleaned up when the Job is deleted: a hostPath outlives the
+# pod, which is the point for logs and the hazard for disk.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  # ----------------------------------------------- the training Job: run dir
+  # The volume is ADDED by name rather than replacing the `run` emptyDir, and
+  # the container's volumeMount is re-pointed at it by mountPath. Both lists
+  # merge on their own key (name, mountPath), so this patch does not depend on
+  # the order of the base's volumes and survives the base gaining another one.
+  # The unused `run` emptyDir is left in place: an emptyDir that nothing mounts
+  # costs nothing, and deleting it by index is the brittle part.
+  - target:
+      kind: Job
+      name: qwen3-pretrain
+    patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: qwen3-pretrain
+        namespace: qwen3-pretrain
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: nvme
+                hostPath:
+                  path: /opt/dlami/nvme
+                  type: Directory
+            containers:
+              - name: train
+                env:
+                  - name: HF_HOME
+                    value: /nvme/hf
+                volumeMounts:
+                  - name: nvme
+                    mountPath: /workspace/run
+                    subPath: qwen3-pretrain/run
+                  - name: nvme
+                    mountPath: /nvme/hf
+                    subPath: qwen3-pretrain/hf
+
+  # -------------------------------------------------- the prep Job: HF cache
+  # prepare_c4.py streams c4 and caches Arrow shards under HF_HOME. The repo's
+  # own preflight sizes that cache at ~3x the dataset, so it is the largest
+  # transient write in the whole run and the one most worth keeping local.
+  - target:
+      kind: Job
+      name: c4-prep
+    patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: c4-prep
+        namespace: qwen3-pretrain
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: nvme
+                hostPath:
+                  path: /opt/dlami/nvme
+                  type: Directory
+            containers:
+              - name: prep
+                env:
+                  - name: HF_HOME
+                    value: /nvme/hf
+                volumeMounts:
+                  - name: nvme
+                    mountPath: /nvme/hf
+                    subPath: qwen3-pretrain/hf
