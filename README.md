@@ -280,13 +280,54 @@ store does not help here.** A `g6e.48xlarge` carries 6.5 TiB of free local NVMe
 (see the next paragraph) and the pull still fails, because containerd's data root
 is `/var/lib/containerd` on the *root* volume and is not symlinked onto the
 instance store. Check the volume containerd actually uses, not the node's total
-disk. Second, on HyperPod the root volume **is** resizable — the instance group
-takes `InstanceStorageConfigs` with
-`EbsVolumeConfig{VolumeSizeInGB: 500, RootVolume: true}`, and `RootVolume: true`
-is the part that matters (`false` attaches a *secondary* volume, which containerd
-will not use either). That replaces the nodes, so it is a cluster-admin change,
-not something a job can do. Failing both, pre-pull the image onto the node or
-host it in a registry closer to the cluster.
+disk. Second, **the root volume itself cannot be resized, and the field that
+looks like it does is not that field.** On HyperPod the instance group takes
+`InstanceStorageConfigs` with `EbsVolumeConfig{VolumeSizeInGB, RootVolume}`, and
+`RootVolume: true` **forbids** `VolumeSizeInGB` — "the size of the root volume is
+determined for you". It exists only so you can supply your own KMS key for the
+root volume. An `update-cluster` call pairing the two is rejected.
+
+What works is the *secondary* volume, and the reason it works is a step most
+readers would not look for:
+
+```bash
+# RootVolume: false is the working form. The size applies to a SECOND
+# EBS volume, which HyperPod mounts at /opt/sagemaker.
+InstanceStorageConfigs=[{EbsVolumeConfig={VolumeSizeInGB=500,RootVolume=false}}]
+```
+
+A second volume at `/opt/sagemaker` would be useless on its own, because
+containerd reads from `/var/lib/containerd` on the root volume. The link is the
+instance group's **lifecycle script**. AWS's sample `on_create.sh` — the one
+HyperPod clusters are normally built from — carries exactly this conditional:
+
+```bash
+if [[ $(mount | grep /opt/sagemaker) ]]; then
+  # Found secondary EBS volume. Set containerd data root to it.
+  sed -i -e "/^[# ]*root\s*=/c\root = \"/opt/sagemaker/containerd/data-root\"" \
+    /etc/eks/containerd/containerd-config.toml
+fi
+```
+
+So the secondary volume **is** the image-storage fix — the volume is the
+capacity, the script is what makes containerd use it, and you need both.
+
+**Check that the script's target path exists before you attach anything.** That
+conditional never runs on a cluster with no secondary volume, so it is routinely
+untested, and on `p6-b200-eks-cluster` it is simply wrong: all six nodes keep
+containerd's config at `/etc/containerd/config.toml` and have **no**
+`/etc/eks/containerd/` directory at all. Since `on_create.sh` runs under
+`set -e` and `sed -i` on a missing file exits non-zero, attaching the volume
+there would terminate every node in the group and then fail provisioning on the
+replacements.
+
+`g5/eks/NODE-DISK-FIX.md` is the full runbook: how to check your own nodes, a
+corrected script that finds the config instead of assuming its path, the
+`update-cluster` payload with every field it demands, and how to verify
+containerd actually moved rather than trusting the call. Either way it replaces
+the nodes, so it is a cluster-admin change, not something a job can do. Failing
+that, pre-pull the image onto the node or host it in a registry closer to the
+cluster.
 
 **Node-local scratch, and `/fsx`.** Worth knowing before you point `DATA_PATH` at
 a network volume. On `g6e.48xlarge` the four 1.9 TB instance-store NVMe disks are

@@ -439,12 +439,25 @@ bound), `ebs.csi.aws.com` with `gp2` and `sagemaker-spaces-default-storage-class
 `g6e` instance group with `"InstanceStorageConfigs": []` — nothing configured,
 hence the default 100 GiB root. The API (`update-cluster`) accepts:
 
-- `EbsVolumeConfig{VolumeSizeInGB, RootVolume}` — and `RootVolume: true` applies
-  the size **to the root volume**, which is what containerd needs. Other
-  clusters in this same account already use this: `eks-runai-hyperpod-v2` sets
-  500 GB on its `g6` group and 1000 GB on `p5e`, `palashmr-b300-efa-tf` sets
-  500 GB on `worker-b300` — all with `RootVolume: false`, i.e. as a *secondary*
-  volume.
+- `EbsVolumeConfig{VolumeSizeInGB, RootVolume}`.
+
+  **CORRECTION (2026-10-09, finding N18).** This entry originally read that
+  `RootVolume: true` "applies the size to the root volume, which is what
+  containerd needs", and called `RootVolume: false` the wrong one. **Both halves
+  were wrong.** `RootVolume: true` *forbids* `VolumeSizeInGB` ("the size of the
+  root volume is determined for you") and exists only to supply a customer-
+  managed KMS key; `RootVolume: false` + `VolumeSizeInGB` attaches a secondary
+  volume at `/opt/sagemaker`, and **this cluster's own `on_create.sh` points
+  containerd's data root at it**, so the secondary volume is precisely the fix.
+  The original claim had the mechanism exactly inverted. See N18.
+
+  The account's own usage was visible in this entry all along and contradicted
+  it: `eks-runai-hyperpod-v2` 500 GB on `g6`, 1000 GB on `p5e`, `worker-b300`
+  500 GB — **all `RootVolume: false`**. Across all 10 clusters in the account,
+  15 volume configs are `RootVolume: false` and **zero** are `true`. That
+  unanimity was the signal, and this entry recorded it while concluding the
+  opposite.
+
 - `FsxLustreConfig{DnsName, MountName, MountPath}` — "the local path where the
   Amazon FSx for Lustre file system is mounted on instances". This is the
   supported way to get a genuine **host** `/fsx`, and it is simply not
@@ -486,6 +499,190 @@ patch reverted byte-identical by checksum.
 
 ---
 
+# N18 — the remedy this document recommended for N15 cannot be executed
+
+Raised 2026-10-09, acting on the request "raise the g6e root volume to 500 GB
+with `RootVolume: true`" — which is the remedy N17 and the root README both
+named. It is not a valid API call, and the guidance was published.
+
+## `RootVolume: true` forbids a size
+
+Three independent sources agree, verbatim:
+
+> You can't specify the `VolumeSizeInGB` field. The size of the root volume is
+> determined for you.
+
+- `aws sagemaker update-cluster help` (aws-cli/2.34.36, local)
+- SageMaker API reference, `ClusterEbsVolumeConfig`
+- CDK `ClusterEbsVolumeConfigProperty`
+
+`RootVolume: true` exists for ONE purpose: supplying a customer-managed KMS key
+to encrypt the root volume (`VolumeKmsKeyId` becomes required). It is an
+*encryption* switch, not a *sizing* switch. The root volume size is not a
+customer-settable parameter at all.
+
+So the N15/N17 remedy, and the root README paragraph derived from it, asked the
+reader to make a call the service rejects.
+
+## The account's own configuration said so, and was recorded without being read
+
+| cluster | group | `RootVolume` | size |
+|---|---|---|---|
+| `eks-runai-hyperpod-v2` | `gpu-workers-g6` | False | 500 |
+| `eks-runai-hyperpod-v2` | `gpu-workers-p5e` | False | 1000 |
+| `miromind-b300-rerun` | `worker-b300`, `worker-b300-2` | False | 500 |
+| `rallela-hetero-bench` | `g5`, `p5-group`, `p5en-group`, `p6-b200-group` | False | 500 |
+| `rallela-isaac-lab` | `g6e-group`, `g6e2-group` | False | 500 |
+| `hp-cluster-hypd-0710-be86` | `blog-test`, `ying-gui-test-3`, `ying-gui-test-ig` | False | 300 / 300 / 500 |
+| `ml-hyperpod-slurm-workload-us-west-2` | `controller` | False | 100 |
+| `miromind-b300-rerun` | `controller-machine`, `login-nodes` | False | 100 |
+
+**15 of 15 volume configs across 10 clusters use `RootVolume: false`. Zero use
+`true`.** N17 listed three of these rows and still concluded `true` was the
+right field — the unanimity was on the page, uninterpreted. A config nobody in
+the account has ever used is more likely to be invalid than to be the one
+everybody missed.
+
+## The secondary volume IS the fix, via the lifecycle script
+
+`RootVolume: false` + `VolumeSizeInGB` attaches a second EBS volume mounted at
+`/opt/sagemaker`. On its own that is useless for image storage, because
+containerd reads `/var/lib/containerd` on the root volume — which is what N17
+correctly measured and then drew the wrong conclusion from.
+
+The missing link is the instance group's lifecycle script. This cluster's
+`on_create.sh` (`s3://p6-b200-bucket-159553542841-us-west-2/on_create.sh`,
+556 bytes, unchanged since 2025-07-29) is 24 lines, and this is the operative
+half of it:
+
+```bash
+if [[ $(mount | grep /opt/sagemaker) ]]; then
+  logger "Found secondary EBS volume. Setting containerd data root to /opt/sagemaker/containerd/data-root"
+  sed -i -e "/^[# ]*root\s*=/c\root = \"/opt/sagemaker/containerd/data-root\"" /etc/eks/containerd/containerd-config.toml
+fi
+```
+
+The conditional has been sitting there, never satisfied, because
+`InstanceStorageConfigs` is `[]` on every group in this cluster. Attaching a
+500 GB secondary volume satisfies it. **No root-volume resize is needed or
+possible.**
+
+This also explains the account-wide pattern: `RootVolume: false` + a size is the
+HyperPod idiom precisely *because* the stock lifecycle script completes it.
+
+## …and the script on THIS cluster is broken, which the never-fired branch hid
+
+The branch above has never executed on this cluster, so it was never known to
+work — and it does not. Checked on every node via the node-exporter host mount:
+
+| path | g6e.48xlarge (x4) | c6i.8xlarge (x2) |
+|---|---|---|
+| `/etc/eks/containerd/containerd-config.toml` — what the `sed` edits | **ABSENT** | **ABSENT** |
+| `/etc/containerd/config.toml` — where the AMI keeps it | present, 1200 b | present, 956 b |
+
+There is no `/etc/eks/containerd/` directory at all (`/etc/eks/` holds
+`bootstrap.sh`, `containerd-version.txt`, `eni-max-pods.txt`,
+`image-credential-provider`, `kubelet`, `log-collector-script`, `pause.tar`,
+`release`). The real file's line 2 is `root = "/var/lib/containerd"` — which the
+script's regex `^[# ]*root\s*=` *would* match if aimed at it. The script is one
+path string away from correct.
+
+`on_create.sh` opens `set -ex`. `sed -i` on a missing file exits non-zero
+(verified locally, with a control confirming a following line IS reached when
+the file exists). So attaching the volume to the live `g6e` group would have:
+
+1. mounted the secondary volume at `/opt/sagemaker` — measured precondition;
+2. made the `if` true for the first time — measured, the mount is absent today;
+3. failed the `sed` — measured, the target file does not exist;
+4. aborted `on_create.sh` non-zero under `set -e` — proven with a control;
+5. failed provisioning on all four replacement nodes — **inferred** from
+   HyperPod lifecycle-script semantics, not observed; testing it means breaking
+   live nodes.
+
+Net: the "obvious" execution of this request terminates 32 GPUs of running
+inference and then does not bring the nodes back. The request was declined on
+blast radius (below) before this was found, and this makes declining correct for
+a second, independent reason.
+
+This is the never-fired-detection pattern in the lesson store, in its sharpest
+form: a conditional that has never run is indistinguishable from one that cannot
+run, and I quoted this one as the mechanism *before* checking that the file it
+edits exists. One `cat` separated "this is the fix" from "this breaks the
+cluster".
+
+Two incidental traps found while checking, both worth carrying because each
+produces a confident wrong reading:
+
+- the `hyp-obs-efa-exporter` DaemonSet shares the
+  `app.kubernetes.io/name=prometheus-node-exporter` label with
+  `hyp-obs-node-exporter` but its image has **no shell utilities at all** — not
+  `grep`, not `cat`. A label-only selector picks it about half the time, every
+  `exec` fails, and the empty output reads as an absent pattern rather than a
+  command that never ran. Select on `app.kubernetes.io/instance`.
+- `/host/proc/mounts` reports the **container's** mount namespace (`/` shows as
+  `overlay`). The host table is `/host/proc/1/mounts`, where `/` is
+  `/dev/nvme0n1p1 xfs` and `/opt/dlami/nvme` is `/dev/mapper/vg.01-lv_ephemeral
+  ext4`. My first reading looked like "no instance store mounted".
+
+Caveat worth carrying: the fix is the volume **and** the script. A cluster whose
+`on_create.sh` lacks or misdirects that conditional gets 500 GB containerd never
+touches, and the symptom is indistinguishable from the volume not being
+attached. Remediation is in `g5/eks/NODE-DISK-FIX.md`.
+
+## Why it was not executed
+
+Both the valid form and the invalid one change the instance group, which
+replaces nodes. Measured blast radius on `p6-b200-cluster`, 2026-10-09:
+
+| node | type | GPU pods | GPUs |
+|---|---|---|---|
+| `hyperpod-i-01943b633be9fcb02` | ml.g6e.48xlarge | `g4-sweep-prefill-0`, `-1` | 8 of 8 |
+| `hyperpod-i-046e578c7b2ef2df4` | ml.g6e.48xlarge | `g4-sweep-prefill-2`, `-3` | 8 of 8 |
+| `hyperpod-i-054be466397214cbe` | ml.g6e.48xlarge | `g4-sweep-decode-0`, `-1` | 8 of 8 |
+| `hyperpod-i-0cb7b4c73ff8f1a54` | ml.g6e.48xlarge | `g4-sweep-decode-2`, `-3` | 8 of 8 |
+
+All four g6e nodes are **fully saturated** — 32 of 32 L40S GPUs held by eight
+Running inference deployments in the `paragao` namespace. Replacing the g6e
+group terminates every one of them. That is a destructive production change
+requiring explicit authorization, so it was prepared and not run.
+
+## A zero-blast-radius target exists, and it is the right hardware anyway
+
+`describe-cluster` shows a **third** instance group nobody had looked at:
+
+```
+g5   ml.g5.8xlarge   TargetCount 2   CurrentCount 0   ActiveOperations {Scaling: 1}
+```
+
+This is the exact instance type the manifests' `nodeSelector:
+instance-type: g5.8xlarge` targets (N12) — so the hardcoded selector was not
+arbitrary, it was written for a group that exists in this cluster and has never
+provisioned. Quota is not the constraint: `ml.g5.8xlarge for cluster usage`
+(`L-1619F5B7`) is **16**, against a target of 2.
+
+Two consequences:
+
+- Configuring `InstanceStorageConfigs` on the **g5** group disturbs nothing,
+  because it has no nodes to replace. The g6e group cannot say that.
+- A g5 run would need no `nodeSelector` override at all, and would be the
+  scenario's real silicon (24 GB A10G) rather than a 48 GB L40S that cannot
+  test a 24 GB ceiling.
+
+Why the group sits at 0 with scaling active is not established and is the next
+thing to chase. `ml.g5.8xlarge` is a 4-year-old instance type and this is an
+on-demand request across three subnets, so regional capacity is the leading
+hypothesis — unverified.
+
+## Severity
+
+**HIGH, and worse than the gap it replaced.** N15 left readers without a remedy;
+the published N17 remedy sends them to an API call that returns an error, while
+explicitly warning them off the parameter that works. A reader who followed it
+would conclude HyperPod cannot do this. Corrected in the root README and in the
+N17 entry above, marked as a correction rather than silently rewritten.
+
+---
+
 # Resolution — what changed in the instructions
 
 Reviewed after the run, not during it. Each fix was then executed verbatim
@@ -509,7 +706,9 @@ against a live cluster before being committed.
 | N14 | RWO patch depends on `WaitForFirstConsumer` | MED | the StorageClass paragraph now explains that both Jobs share the PVC, why WFFC makes co-location work, and that an `Immediate` class can strand the pods |
 | N15 | node disk requirement (~100 GB) unstated | HIGH | new prerequisite with the measured breakdown (25.9 GB compressed / ~77 GB unpacked / both at once), a per-node free-disk command `kubectl get nodes` cannot give, and the explicit statement that a 107 GB HyperPod root volume is not enough |
 | N16 | `logs job/...` can pick a dead pod | MED | documented with the `Found 2 pods, using ...` / `is terminated` output, and the label-selector form given for both Jobs |
-| N17 | 6.51 TiB of local NVMe unmentioned; `/fsx` mechanism unstated; N15's remedy incomplete | HIGH | the node-disk prerequisite now states that a large instance store does **not** help containerd and why, names the real fix (`EbsVolumeConfig{VolumeSizeInGB, RootVolume: true}`, with `RootVolume: false` called out as the wrong one), and a new paragraph documents `/opt/dlami/nvme` (6.86 TiB, not `/scratch` or `/local_scratch`, uncounted by `ephemeral-storage`), `/tmp` as RAM-backed `tmpfs`, and `/fsx` as a CSI **pod** mount rather than a host mount — with a command that maps every FSx filesystem to its AZ so a cross-AZ mount is visible before `DATA_PATH` is set |
+| N17 | 6.51 TiB of local NVMe unmentioned; `/fsx` mechanism unstated; N15's remedy incomplete | HIGH | the node-disk prerequisite now states that a large instance store does **not** help containerd and why, and a new paragraph documents `/opt/dlami/nvme` (6.86 TiB, not `/scratch` or `/local_scratch`, uncounted by `ephemeral-storage`), `/tmp` as RAM-backed `tmpfs`, and `/fsx` as a CSI **pod** mount rather than a host mount — with a command that maps every FSx filesystem to its AZ so a cross-AZ mount is visible before `DATA_PATH` is set. **The remedy this row originally claimed to name was wrong and is superseded by N18.** |
+| N18 | the published N15/N17 remedy is an invalid API call | HIGH | `RootVolume: true` forbids `VolumeSizeInGB` (three sources; 0 of 15 configs in the account use it), so the root README paragraph is rewritten around the form that works: `RootVolume: false` + `VolumeSizeInGB`, a secondary volume at `/opt/sagemaker`, **plus** the `on_create.sh` conditional that repoints containerd's data root at it |
+| N19 | that lifecycle conditional is itself broken here, and would fail node provisioning | HIGH | measured on all 6 nodes: the script `sed`s `/etc/eks/containerd/containerd-config.toml`, which does not exist (the AMI uses `/etc/containerd/config.toml`), and `set -e` + a failing `sed -i` aborts `on_create.sh`. New `g5/eks/NODE-DISK-FIX.md` leads with this hazard, gives the per-node check, a corrected script that *finds* the config rather than assuming its path, the full `update-cluster` payload, and a node-side verification that containerd moved — plus the two traps that produce false readings (the shell-less `hyp-obs-efa-exporter` sharing the node-exporter label, and `/host/proc/mounts` showing the container namespace instead of `/host/proc/1/mounts`) |
 
 One finding needed no fix and one needed none *yet*: N6 because the apply was
 correct, N10 because the instructions already avoid the trap.
